@@ -372,6 +372,12 @@ export class DeskWorld {
       const bendTarget = touching ? 0 : Math.min(1, speed / 1600) * Math.sin(this.time * 11 + n.phase) * 0.8;
       n.bend += (bendTarget - n.bend) * Math.min(1, dt * 8);
 
+      // paper doesn't stand on its edge: topple anything resting upright
+      if (touching && speed < 160) {
+        const a = n.body.getAngle();
+        const upright = Math.abs(Math.sin(a));
+        if (upright > 0.45) n.body.applyAngularImpulse(-Math.sign(Math.sin(2 * a)) * 0.004 * n.body.getMass(), true);
+      }
       // the moment it lands, not every frame it lies there
       if (touching && !n.touching && speed > 380) this.events.push({ kind: 'thud', note: n.id, country: n.home, x, y, strength: Math.min(1, speed / 2000) });
       n.touching = touching;

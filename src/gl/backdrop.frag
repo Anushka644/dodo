@@ -87,10 +87,10 @@ void main() {
     vec4 pl = uPulses[i];
     if (pl.z < 0.0) continue;
     float d = length(css - pl.xy);
-    float rad = 40.0 + pl.z * 520.0;
-    float ring = exp(-pow((d - rad) / (6.0 + pl.z * 20.0), 2.0)) * exp(-pl.z * 2.6);
+    float rad = 30.0 + pl.z * 300.0;
+    float ring = exp(-pow((d - rad) / (4.0 + pl.z * 12.0), 2.0)) * exp(-pl.z * 3.2);
     vec3 col = pl.w > 0.5 ? vec3(0.9, 0.25, 0.2) : LIME;
-    color += col * ring * 0.35;
+    color += col * ring * 0.2;
   }
 
   color = pow(max(color, 0.0), vec3(1.0 / 2.2));

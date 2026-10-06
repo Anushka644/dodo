@@ -1,6 +1,8 @@
 import { ASPECT, MICRO_H, MICRO_W, PLATE_H, PLATE_W, PX, layout } from './layout';
 import { fillDodo } from './dodo';
 import type { Issue } from './seed';
+import { COUNTRIES, formatMoney, type Country } from '../borders/countries';
+import { setSymbol, type Glyph } from './glyphs';
 
 // A real banknote goes through the press several times, one plate per
 // process. We do the same: each plate is a grayscale canvas that becomes a
@@ -13,16 +15,29 @@ import type { Issue } from './seed';
 //   water  electrotype watermark — thinner paper, glows when backlit
 //   back   the reverse side, seen through the paper when backlit
 //   red    letterpress — serial numbers
+//
+// Every window is a country, and a window prints its notes in its own
+// money: the note is always ONE DODO, but the medallions, the colour-shifting
+// glyph, the watermark and the reverse carry the local currency sign, and the
+// denomination is spelled out in local terms.
 
 export type PlateName = 'ink' | 'ovi' | 'uv' | 'water' | 'back' | 'red';
+export const PLATE_NAMES: PlateName[] = ['ink', 'ovi', 'uv', 'water', 'back', 'red'];
+
+// Each face is followed by serifs that carry the accented letters and
+// currency signs it lacks (ş, ₹, ₦…), so nothing ever falls through to a sans.
+const SERIF_FALLBACK = '"Noto Serif", "Times New Roman", "DejaVu Serif", Georgia, serif';
 
 export const FONTS = {
-  sc: '"IM Fell English SC", Georgia, serif',
-  fell: '"IM Fell English", Georgia, serif',
-  num: '"Bodoni Moda", "Didot", Georgia, serif',
+  sc: `"IM Fell English SC", ${SERIF_FALLBACK}`,
+  fell: `"IM Fell English", ${SERIF_FALLBACK}`,
+  num: `"Bodoni Moda", "Didot", ${SERIF_FALLBACK}`,
   sig: '"Pinyon Script", cursive',
   mono: '"IBM Plex Mono", ui-monospace, monospace',
 };
+
+// enough text to pull in every subset the plates and stamps use
+const SAMPLE = 'AZaz0189$£¥€₹₦₩₺·éçüşÍÓ→';
 
 export async function loadFonts() {
   const want = [
@@ -33,7 +48,71 @@ export async function loadFonts() {
     `400 40px ${FONTS.sig}`,
     `500 40px ${FONTS.mono}`,
   ];
-  await Promise.all(want.map((f) => document.fonts.load(f).catch(() => undefined)));
+  await Promise.all(want.map((f) => document.fonts.load(f, SAMPLE).catch(() => undefined)));
+}
+
+// ---------------------------------------------------------------- money in words
+
+const ONES = [
+  'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen',
+];
+const TENS = ['', '', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety'];
+const SCALES: [number, string][] = [[1e12, 'trillion'], [1e9, 'billion'], [1e6, 'million'], [1e3, 'thousand']];
+
+/** 83 → "eighty-three", 15600 → "fifteen thousand six hundred". Integers only (fractions are dropped). */
+export function numberToWords(n: number): string {
+  if (!Number.isFinite(n)) return '';
+  if (n < 0) return `minus ${numberToWords(-n)}`;
+  n = Math.floor(n);
+  if (n < 20) return ONES[n];
+  if (n < 100) return TENS[Math.floor(n / 10)] + (n % 10 ? `-${ONES[n % 10]}` : '');
+  if (n < 1000) return `${ONES[Math.floor(n / 100)]} hundred${n % 100 ? ` ${numberToWords(n % 100)}` : ''}`;
+  for (const [v, name] of SCALES) {
+    if (n >= v) {
+      const rest = n % v;
+      return `${numberToWords(Math.floor(n / v))} ${name}${rest ? ` ${numberToWords(rest)}` : ''}`;
+    }
+  }
+  return String(n);
+}
+
+// the small change, by ISO code (zero-decimal currencies need none)
+const MINOR: Record<string, [string, string]> = {
+  USD: ['cent', 'cents'],
+  AUD: ['cent', 'cents'],
+  EUR: ['cent', 'cents'],
+  GBP: ['penny', 'pence'],
+  INR: ['paisa', 'paise'],
+  BRL: ['centavo', 'centavos'],
+  MXN: ['centavo', 'centavos'],
+  TRY: ['kuruş', 'kuruş'],
+  NGN: ['kobo', 'kobo'],
+  IDR: ['sen', 'sen'],
+};
+
+function fractionDigits(c: Country) {
+  try {
+    return new Intl.NumberFormat('en', { style: 'currency', currency: c.currency }).resolvedOptions().maximumFractionDigits ?? 2;
+  } catch {
+    return 2;
+  }
+}
+
+/** "eighty-three rupees twenty paise", "one hundred forty-nine yen", "seventy-nine pence" */
+export function amountInWords(c: Country, dodo = 1): string {
+  const digits = fractionDigits(c);
+  const scale = 10 ** digits;
+  const total = Math.round(dodo * c.rate * scale);
+  const major = Math.floor(total / scale);
+  const minor = total - major * scale;
+  const parts: string[] = [];
+  if (major > 0 || minor === 0) parts.push(`${numberToWords(major)} ${c.unit[major === 1 ? 0 : 1]}`);
+  if (minor > 0 && digits > 0) {
+    const m = MINOR[c.currency] ?? ['cent', 'cents'];
+    parts.push(`${numberToWords(minor)} ${m[minor === 1 ? 0 : 1]}`);
+  }
+  return parts.join(' ');
 }
 
 type Ctx = CanvasRenderingContext2D;
@@ -106,15 +185,111 @@ function diamond(ctx: Ctx, x: number, y: number, r: number) {
 const L = layout;
 const CX = L.rosette.cx;
 
-function drawInkStatic(ctx: Ctx) {
+// ---------------------------------------------------------------- set glyphs
+
+/**
+ * The currency sign set so its ink fits a box (note units), never larger
+ * than `em`. Multi-letter signs (R$, Rp, A$) shrink until they sit as
+ * comfortably as a single figure would; `diag` caps the half-diagonal so a
+ * sign stays inside a round medallion.
+ */
+function fitSymbol(sym: string, em: number, maxW: number, maxH: number, diag = Infinity, weight = '900', family = FONTS.num): Glyph {
+  let g = setSymbol(sym, weight, family, em * PX, -0.03);
+  const w = (g.ink[2] - g.ink[0]) / PX;
+  const h = (g.ink[3] - g.ink[1]) / PX;
+  const k = Math.min(1, maxW / w, maxH / h, diag / Math.hypot(w / 2, h / 2));
+  if (k < 0.999) g = setSymbol(sym, weight, family, em * k * PX, -0.03);
+  return g;
+}
+
+/**
+ * Prints a set glyph so that the point (ax, ay) of its ink box — 0..1 across,
+ * 0..1 down; ay may also be 'base' for the baseline — lands on (x, y).
+ * `bold` thickens it by that much (note units), the way a thin outline
+ * keeps Bodoni's hairlines from vanishing at small sizes.
+ */
+function printGlyph(ctx: Ctx, g: Glyph, x: number, y: number, ax: number, ay: number | 'base', bold = 0) {
+  const [x0, y0, x1, y1] = g.ink;
+  const px = Math.round(x * PX - (x0 + ax * (x1 - x0)));
+  const py = Math.round(y * PX - (ay === 'base' ? g.oy : y0 + ay * (y1 - y0)));
+  ctx.save();
+  ctx.scale(1 / PX, 1 / PX);
+  ctx.globalCompositeOperation = 'lighten';
+  ctx.drawImage(g.c, px, py);
+  const r = bold * PX * 0.5;
+  if (r > 0.25) {
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      ctx.drawImage(g.c, px + Math.cos(a) * r, py + Math.sin(a) * r);
+    }
+  }
+  ctx.restore();
+}
+
+/** ink box of a placed glyph, note units, relative to its anchor */
+function glyphSize(g: Glyph) {
+  return { w: (g.ink[2] - g.ink[0]) / PX, h: (g.ink[3] - g.ink[1]) / PX, below: (g.ink[3] - g.oy) / PX };
+}
+
+// One line of mixed type, fitted to a width and centred. Each piece is
+// either plain text in a face, or a pre-set glyph (for figures with a sign).
+type Piece = { text: string; spec: string; size: number; family: string; tracking?: number } | { glyph: Glyph } | { gap: number } | { dot: number };
+
+function line(ctx: Ctx, pieces: Piece[], cx: number, y: number, maxW: number) {
+  const widths = pieces.map((p) => {
+    if ('gap' in p) return p.gap;
+    if ('dot' in p) return p.dot * 2;
+    if ('glyph' in p) return p.glyph.adv / PX;
+    font(ctx, p.spec, p.size, p.family);
+    const chars = [...p.text];
+    return chars.reduce((a, ch) => a + measure(ctx, ch), 0) + (p.tracking ?? 0) * (chars.length - 1);
+  });
+  const total = widths.reduce((a, b) => a + b, 0);
+  const k = Math.min(1, maxW / total);
+  ctx.save();
+  ctx.translate(cx, y);
+  ctx.scale(k, k);
+  let x = -total / 2;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'alphabetic';
+  pieces.forEach((p, i) => {
+    if ('dot' in p) {
+      diamond(ctx, x + p.dot, -p.dot * 1.2, p.dot * 0.55);
+    } else if ('glyph' in p) {
+      // glyphs are set at full plate resolution; undo our own scale for them
+      ctx.save();
+      ctx.scale(1 / k, 1 / k);
+      printGlyph(ctx, p.glyph, x * k, 0, 0, 'base');
+      ctx.restore();
+    } else if ('text' in p) {
+      font(ctx, p.spec, p.size, p.family);
+      spaced(ctx, p.text, x, 0, p.tracking ?? 0, 'left');
+    }
+    x += widths[i];
+  });
+  ctx.restore();
+}
+
+function drawInkStatic(ctx: Ctx, country: Country) {
   ctx.textBaseline = 'alphabetic';
 
   // title
   font(ctx, '400', 0.064, FONTS.sc);
   spaced(ctx, 'THE DODO RESERVE', CX, 0.222, 0.008);
-  font(ctx, 'italic 400', 0.03, FONTS.fell);
-  ctx.textAlign = 'center';
-  fillT(ctx, 'promises to pay the bearer on demand', CX, 0.268);
+  // the promise, made in the name of whichever country this window is
+  line(
+    ctx,
+    [
+      { text: country.formal.toUpperCase(), spec: '400', size: 0.0235, family: FONTS.sc, tracking: 0.0035 },
+      { gap: 0.014 },
+      { dot: 0.0075 },
+      { gap: 0.014 },
+      { text: 'promises to pay the bearer on demand', spec: 'italic 400', size: 0.029, family: FONTS.fell },
+    ],
+    CX,
+    0.268,
+    0.6,
+  );
 
   // denomination, set into the rosette
   font(ctx, '400', 0.062, FONTS.sc);
@@ -123,9 +298,21 @@ function drawInkStatic(ctx: Ctx) {
   rule(ctx, CX + w / 2 + 0.03, CX + w / 2 + 0.105, 0.507, 0.0018);
   diamond(ctx, CX - w / 2 - 0.018, 0.507, 0.008);
   diamond(ctx, CX + w / 2 + 0.018, 0.507, 0.008);
-  font(ctx, 'italic 400', 0.024, FONTS.fell);
-  ctx.textAlign = 'center';
-  fillT(ctx, 'payable in any currency, in any country', CX, 0.575);
+  // …and what that is worth here, in words and in figures
+  const figure = setSymbol(formatMoney(country, 1), '400', FONTS.fell, 0.027 * PX);
+  line(
+    ctx,
+    [
+      { text: amountInWords(country), spec: 'italic 400', size: 0.025, family: FONTS.fell },
+      { gap: 0.012 },
+      { dot: 0.0052 },
+      { gap: 0.012 },
+      { glyph: figure },
+    ],
+    CX,
+    0.575,
+    0.5,
+  );
 
   // signature block (the signature itself is dynamic)
   rule(ctx, CX - 0.2, CX + 0.2, 0.81, 0.0012);
@@ -134,21 +321,9 @@ function drawInkStatic(ctx: Ctx) {
 
   const P = L.portrait;
 
-  // corner numerals, sitting in their guilloche medallions
-  font(ctx, '900', 0.098, FONTS.num);
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  // Bodoni's hairlines vanish at this size; a thin stroke keeps the flag and foot
-  ctx.lineWidth = 0.0035;
-  for (const m of L.medallions) {
-    fillT(ctx, '1', m.cx, m.cy + 0.004);
-    ctx.save();
-    ctx.scale(1 / PX, 1 / PX);
-    ctx.lineWidth = 0.0035 * PX;
-    ctx.strokeText('1', m.cx * PX, (m.cy + 0.004) * PX);
-    ctx.restore();
-  }
-  ctx.textBaseline = 'alphabetic';
+  // corner signs, sitting in their guilloche medallions
+  const sign = fitSymbol(country.symbol, 0.098, 0.1, 0.08, 0.058);
+  for (const m of L.medallions) printGlyph(ctx, sign, m.cx, m.cy, 0.5, 0.5, 0.0035);
 
   // see-through register, front half: three of six petals
   petals(ctx, [0, 2, 4]);
@@ -216,10 +391,13 @@ function drawCaption(ctx: Ctx, issue: Issue, selfie: boolean) {
   fillT(ctx, sub, P.cx, P.cy + P.ry + 0.09);
 }
 
-function drawOvi(ctx: Ctx) {
-  font(ctx, '900', L.ovi.size, FONTS.num);
-  ctx.textAlign = 'center';
-  fillT(ctx, '1', L.ovi.x, L.ovi.y);
+function drawOvi(ctx: Ctx, country: Country) {
+  // the big colour-shifting sign: left-aligned to the frame, sitting on the
+  // OVI baseline; anything that hangs below (Rp) is lifted clear of the border
+  const g = fitSymbol(country.symbol, L.ovi.size, 0.19, 0.2);
+  const { below } = glyphSize(g);
+  const lift = Math.max(0, L.ovi.y + below - 0.876);
+  printGlyph(ctx, g, L.ovi.x - 0.03, L.ovi.y - lift, 0, 'base');
 }
 
 function drawUv(ctx: Ctx) {
@@ -284,14 +462,13 @@ function drawUv(ctx: Ctx) {
   }
 }
 
-function drawWater(ctx: Ctx) {
-  // electrotype: a crisp bright "1" and a pair of bars, just like the real ones
-  font(ctx, '900', 0.13, FONTS.num);
-  ctx.textAlign = 'center';
-  fillT(ctx, '1', L.watermark.cx + 0.13, L.watermark.cy + 0.21);
+function drawWater(ctx: Ctx, country: Country) {
+  // electrotype: a crisp bright currency sign, like the "1" on real ones
+  const g = fitSymbol(country.symbol, 0.13, 0.1, 0.1);
+  printGlyph(ctx, g, L.watermark.cx + 0.13, L.watermark.cy + 0.21, 0.5, 1);
 }
 
-function drawBack(ctx: Ctx) {
+function drawBack(ctx: Ctx, country: Country) {
   // The reverse, as seen through the paper (so: mirrored).
   ctx.save();
   ctx.translate(ASPECT, 0);
@@ -300,9 +477,8 @@ function drawBack(ctx: Ctx) {
   ctx.strokeRect(0.09, 0.09, ASPECT - 0.18, 0.82);
   ctx.lineWidth = 0.0015;
   ctx.strokeRect(0.11, 0.11, ASPECT - 0.22, 0.78);
-  font(ctx, '900', 0.62, FONTS.num);
-  ctx.textAlign = 'center';
-  fillT(ctx, '1', 0.48, 0.74);
+  const g = fitSymbol(country.symbol, 0.62, 0.62, 0.56);
+  printGlyph(ctx, g, 0.5, 0.5, 0.5, 0.5);
   font(ctx, '400', 0.08, FONTS.sc);
   spaced(ctx, 'IN DODO WE TRUST', 1.42, 0.5, 0.01);
   font(ctx, 'italic 400', 0.034, FONTS.fell);
@@ -357,6 +533,25 @@ export function drawMicro(): HTMLCanvasElement {
   return c;
 }
 
+function clear(p: { c: HTMLCanvasElement; ctx: Ctx }) {
+  const ctx = p.ctx;
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, p.c.width, p.c.height);
+  ctx.restore();
+  ctx.fillStyle = '#fff';
+  ctx.strokeStyle = '#fff';
+}
+
+/**
+ * The plates for one country. Call `loadFonts()` first.
+ *
+ *   const plates = new Plates(COUNTRIES[i]);
+ *   plates.issue(mint(name));             // ink + red
+ *   for (const n of PLATE_NAMES) renderer.setPlate(n, plates.canvas(n));
+ */
 export class Plates {
   ink = plate();
   ovi = plate();
@@ -365,17 +560,35 @@ export class Plates {
   back = plate();
   red = plate();
   private inkStatic = plate();
+  private last: { issue: Issue; selfie: boolean } | null = null;
+  country: Country;
 
-  constructor() {
-    drawInkStatic(this.inkStatic.ctx);
-    drawOvi(this.ovi.ctx);
+  constructor(country: Country = COUNTRIES[0]) {
+    this.country = country;
     drawUv(this.uv.ctx);
-    drawWater(this.water.ctx);
-    drawBack(this.back.ctx);
+    this.print(country);
+  }
+
+  private print(country: Country) {
+    for (const p of [this.inkStatic, this.ovi, this.water, this.back]) clear(p);
+    drawInkStatic(this.inkStatic.ctx, country);
+    drawOvi(this.ovi.ctx, country);
+    drawWater(this.water.ctx, country);
+    drawBack(this.back.ctx, country);
+  }
+
+  /** Re-prints everything that depends on the country. Returns the plates that changed. */
+  setCountry(country: Country): PlateName[] {
+    if (country === this.country) return [];
+    this.country = country;
+    this.print(country);
+    if (this.last) this.issue(this.last.issue, this.last.selfie);
+    return ['ink', 'ovi', 'water', 'back'];
   }
 
   /** Re-prints only what depends on the bearer's name. Returns the plates that changed. */
   issue(issue: Issue, selfie = false): PlateName[] {
+    this.last = { issue, selfie };
     const ink = this.ink.ctx;
     ink.save();
     ink.setTransform(1, 0, 0, 1, 0, 0);
