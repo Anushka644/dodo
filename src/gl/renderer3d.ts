@@ -25,7 +25,7 @@ const FULLSCREEN_VERT = `#version 300 es
 in vec2 aPos;
 void main() { gl_Position = vec4(aPos, 0.0, 1.0); }`;
 
-const SAMPLERS = ['tInk', 'tOvi', 'tUv', 'tWater', 'tBack', 'tRed', 'tPortrait', 'tMicro', 'tVideo'] as const;
+const SAMPLERS = ['tInk', 'tOvi', 'tUv', 'tWater', 'tBack', 'tRed', 'tPortrait', 'tMicro', 'tVideo', 'tStamps'] as const;
 type Sampler = (typeof SAMPLERS)[number];
 
 const PLATE_SAMPLER: Record<PlateName, Sampler> = {
@@ -51,8 +51,15 @@ export interface SheetDraw {
 class Program {
   readonly program: WebGLProgram;
   private locs = new Map<string, WebGLUniformLocation | null>();
+  private types = new Map<string, number>();
   constructor(private gl: WebGL2RenderingContext, vert: string, frag: string) {
     this.program = link(gl, compile(gl, gl.VERTEX_SHADER, vert), compile(gl, gl.FRAGMENT_SHADER, frag));
+    // read the real uniform types, so arrays and matrices can't be confused
+    const n = gl.getProgramParameter(this.program, gl.ACTIVE_UNIFORMS) as number;
+    for (let i = 0; i < n; i++) {
+      const info = gl.getActiveUniform(this.program, i);
+      if (info) this.types.set(info.name.replace(/\[0\]$/, ''), info.type);
+    }
   }
   loc(name: string) {
     if (!this.locs.has(name)) this.locs.set(name, this.gl.getUniformLocation(this.program, name));
@@ -64,11 +71,26 @@ class Program {
       const l = this.loc(name);
       if (!l) continue;
       const v = uniforms[name];
-      if (typeof v === 'number') gl.uniform1f(l, v);
-      else if (v.length === 16) gl.uniformMatrix4fv(l, false, v);
-      else if (v.length === 2) gl.uniform2fv(l, v);
-      else if (v.length === 3) gl.uniform3fv(l, v);
-      else if (v.length === 4) gl.uniform4fv(l, v);
+      if (typeof v === 'number') {
+        gl.uniform1f(l, v);
+        continue;
+      }
+      switch (this.types.get(name)) {
+        case gl.FLOAT_MAT4:
+          gl.uniformMatrix4fv(l, false, v);
+          break;
+        case gl.FLOAT_VEC4:
+          gl.uniform4fv(l, v);
+          break;
+        case gl.FLOAT_VEC3:
+          gl.uniform3fv(l, v);
+          break;
+        case gl.FLOAT_VEC2:
+          gl.uniform2fv(l, v);
+          break;
+        default:
+          gl.uniform1fv(l, v);
+      }
     }
   }
 }
@@ -164,6 +186,11 @@ export class Renderer3D {
 
   setPortrait(source: HTMLCanvasElement | HTMLVideoElement) {
     this.upload('tPortrait', source, { single: false });
+  }
+
+  /** passport stamp atlas */
+  setStamps(canvas: HTMLCanvasElement) {
+    this.upload('tStamps', canvas, { single: true });
   }
 
   /** the webcam, mirrored in the shader; mipmapped for blurred lookups */

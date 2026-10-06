@@ -1,5 +1,19 @@
 import { sound } from './sound';
-import type { PaperSoundsApi } from './contracts';
+
+export interface PaperSoundsApi {
+  /** paper flutter loop; call every frame with the fastest note's speed; 0 silences */
+  flutter(speed: number): void;
+  /** banknote counter "brrrrt" while printing; intensity 0..1, 0 stops */
+  counter(intensity: number): void;
+  grab(): void;
+  release(): void;
+  /** a note lands */
+  catchNote(): void;
+  /** crumpling crackle */
+  crumple(amount: number): void;
+  /** a sharp paper snap */
+  snap(): void;
+}
 
 // Paper and money, synthesised — no files. Two loops are steered every frame
 // (a note in the air; the counting machine while you print). The one-shots are

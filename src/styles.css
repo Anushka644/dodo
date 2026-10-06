@@ -57,16 +57,12 @@ button {
 
 /* ------------------------------------------------------------ stage */
 
-.stage,
-.overlay {
+.stage {
   position: fixed;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
-}
-
-.stage {
   cursor: grab;
   touch-action: none;
 }
@@ -75,18 +71,10 @@ button {
   cursor: grabbing;
 }
 
-.overlay {
-  pointer-events: none;
-}
-
-.mode-camera .stage {
-  cursor: default;
-}
-
 .masthead,
 .supply,
 .dock {
-  transition: opacity 900ms var(--ease) 1600ms, transform 900ms var(--ease) 1600ms;
+  transition: opacity 800ms var(--ease) 500ms, transform 800ms var(--ease) 500ms;
 }
 
 .app:not(.is-ready) .masthead,
@@ -97,56 +85,45 @@ button {
   transition: none;
 }
 
-/* under the UV torch the chrome steps back too */
-.is-uv .masthead,
-.is-uv .supply,
-.is-uv .dock {
-  opacity: 0.35;
-  transition: opacity 300ms var(--ease);
-}
-
-/* ------------------------------------------------------------ masthead */
+/* ------------------------------------------------------------ the country */
 
 .masthead {
   position: fixed;
-  top: 26px;
-  left: 32px;
+  top: 34px;
+  left: 38px;
   pointer-events: none;
   user-select: none;
 }
 
 .wordmark {
   font-family: var(--sc);
-  font-size: 22px;
-  letter-spacing: 0.22em;
+  font-size: 24px;
+  letter-spacing: 0.16em;
   line-height: 1;
   text-transform: uppercase;
 }
 
 .sub {
-  margin-top: 7px;
+  margin-top: 8px;
   font-size: 10.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--fg-3);
 }
 
-/* ------------------------------------------------------------ money supply */
-
 .supply {
   position: fixed;
-  top: 26px;
-  right: 32px;
+  top: 34px;
+  right: 38px;
   display: grid;
-  gap: 6px;
+  justify-items: end;
+  gap: 10px;
   pointer-events: none;
   user-select: none;
-  text-align: right;
 }
 
 .supply-row {
   display: flex;
-  justify-content: flex-end;
   align-items: baseline;
   gap: 12px;
   font-size: 10.5px;
@@ -160,94 +137,90 @@ button {
 
 .supply-value {
   color: var(--fg);
-  font-size: 13px;
-  min-width: 6ch;
+  font-size: 14px;
+  letter-spacing: 0.02em;
 }
 
-.supply-unit {
-  color: var(--fg-3);
-  font-size: 10.5px;
-}
-
-.inflation {
-  opacity: 0;
-  transform: translateY(-3px);
-  transition: opacity 400ms var(--ease), transform 400ms var(--ease);
-}
-
-.inflation.is-on {
-  opacity: 1;
-  transform: none;
-}
-
-.inflation .supply-value {
-  color: var(--lime);
-}
-
-/* ------------------------------------------------------------ invitation */
-
-.invite {
-  position: fixed;
-  left: 50%;
-  bottom: 4vh;
-  transform: translateX(-50%);
-  width: min(540px, calc(100vw - 32px));
-  padding: 26px 28px 22px;
-  border: 1px solid var(--hair);
-  border-radius: 18px;
-  background: rgba(14, 14, 12, 0.72);
-  backdrop-filter: blur(14px);
-  -webkit-backdrop-filter: blur(14px);
-  text-align: center;
-  animation: rise 900ms var(--ease) 2200ms both;
-}
-
-.invite-title {
+/* the countries currently open on this desktop, like a departures board */
+.countries {
+  display: flex;
+  gap: 4px;
   margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.countries li {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  padding: 3px 6px;
+  border: 1px solid var(--hair);
+  border-radius: 4px;
+  color: var(--fg-3);
+}
+
+.countries li.is-self {
+  color: #0b0b0a;
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+/* ------------------------------------------------------------ dock */
+
+.dock {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 30px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  pointer-events: none;
+  padding: 0 24px;
+}
+
+.dock > * {
+  pointer-events: auto;
+}
+
+.hint-line {
+  margin: 0;
+  max-width: 52ch;
   font-family: var(--serif);
   font-style: italic;
-  font-weight: 400;
-  font-size: 30px;
-  letter-spacing: -0.005em;
-}
-
-.invite-line {
-  margin: 10px auto 0;
-  max-width: 44ch;
-  font-family: var(--serif);
-  font-size: 16px;
-  line-height: 1.45;
+  font-size: 15px;
+  line-height: 1.4;
   color: var(--fg-2);
+  text-align: center;
   text-wrap: balance;
+  pointer-events: none;
 }
 
-.invite-actions {
+.actions {
   display: flex;
-  justify-content: center;
-  gap: 10px;
-  margin-top: 20px;
+  gap: 8px;
+  align-items: center;
   flex-wrap: wrap;
-}
-
-.invite-fine {
-  margin: 14px 0 0;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  color: var(--fg-3);
+  justify-content: center;
 }
 
 .btn {
   display: inline-flex;
   align-items: center;
   gap: 10px;
-  height: 42px;
+  height: 40px;
   padding: 0 18px;
   border-radius: 999px;
   border: 1px solid var(--hair-2);
+  background: rgba(14, 14, 12, 0.6);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   font-family: var(--serif);
   font-size: 16px;
   color: var(--fg-2);
-  transition: color 200ms, border-color 200ms, background 200ms, transform 200ms var(--spring);
+  transition: color 200ms, border-color 200ms, background 200ms, transform 220ms var(--spring);
 }
 
 .btn:hover {
@@ -256,7 +229,7 @@ button {
 }
 
 .btn:active {
-  transform: scale(0.97);
+  transform: scale(0.96);
 }
 
 .btn-primary {
@@ -278,182 +251,28 @@ button {
   box-shadow: 0 0 10px var(--lime);
 }
 
-@keyframes rise {
-  from {
-    opacity: 0;
-    transform: translate(-50%, 12px);
-  }
+/* alone on the desktop: the way out pulses gently */
+.is-alone .btn-primary .led {
+  animation: beckon 1.6s ease-in-out infinite;
 }
 
-.status {
-  position: fixed;
-  left: 50%;
-  top: 28px;
-  transform: translateX(-50%);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  color: var(--fg-2);
-  animation: pulse 1.4s ease-in-out infinite;
-}
-
-@keyframes pulse {
+@keyframes beckon {
   50% {
-    opacity: 0.45;
+    box-shadow: 0 0 2px var(--lime);
+    opacity: 0.55;
   }
-}
-
-.hint {
-  position: fixed;
-  left: 50%;
-  bottom: 104px;
-  transform: translateX(-50%);
-  font-size: 10.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--fg-2);
-  pointer-events: none;
-  white-space: nowrap;
-  animation: pulse 1.8s ease-in-out infinite;
-}
-
-/* ------------------------------------------------------------ dock */
-
-.dock {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  padding: 0 32px 24px;
-  display: grid;
-  grid-template-columns: 1fr auto 1fr;
-  align-items: end;
-  gap: 24px;
-  pointer-events: none;
-}
-
-.dock > * {
-  pointer-events: auto;
-}
-
-.bearer {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  width: min(240px, 100%);
-}
-
-.bearer-label {
-  font-size: 10px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-}
-
-.bearer input {
-  font-family: var(--serif);
-  font-style: italic;
-  font-size: 19px;
-  color: var(--fg);
-  background: none;
-  border: 0;
-  border-bottom: 1px solid var(--hair-2);
-  padding: 2px 0 5px;
-  outline: none;
-  width: 100%;
-}
-
-.bearer input::placeholder {
-  color: var(--fg-3);
-}
-
-.bearer input:focus {
-  border-bottom-color: var(--fg-2);
-}
-
-/* the gesture legend lights up as your hand does each thing */
-.legend {
-  display: flex;
-  gap: 4px;
-  margin: 0;
-  padding: 5px;
-  list-style: none;
-  border: 1px solid var(--hair);
-  border-radius: 18px;
-  background: rgba(16, 15, 13, 0.55);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-}
-
-.gesture {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 7px 12px 7px 9px;
-  border-radius: 13px;
-  color: var(--fg-3);
-  transition: color 160ms, background 160ms;
-}
-
-.gesture-icon {
-  display: grid;
-  place-items: center;
-  transition: transform 260ms var(--spring), color 160ms;
-}
-
-.gesture-text {
-  display: flex;
-  flex-direction: column;
-  line-height: 1.15;
-}
-
-.gesture-name {
-  font-family: var(--serif);
-  font-size: 14.5px;
-  color: var(--fg-2);
-  transition: color 160ms;
-}
-
-.gesture-does {
-  font-size: 9.5px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.gesture.is-active {
-  background: rgba(198, 254, 31, 0.1);
-  color: var(--lime);
-}
-
-.gesture.is-active .gesture-name {
-  color: var(--fg);
-}
-
-.gesture.is-active .gesture-icon {
-  transform: scale(1.12) rotate(-6deg);
-}
-
-.actions {
-  justify-self: end;
-  display: flex;
-  gap: 6px;
 }
 
 .icon-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  height: 36px;
-  padding: 0 12px;
+  display: inline-grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
   border-radius: 999px;
   border: 1px solid var(--hair);
   color: var(--fg-2);
-  font-size: 10.5px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  transition: color 200ms, border-color 200ms, background 200ms;
-  user-select: none;
-  -webkit-user-select: none;
+  background: rgba(14, 14, 12, 0.6);
+  transition: color 200ms, border-color 200ms;
 }
 
 .icon-btn:hover {
@@ -461,24 +280,12 @@ button {
   border-color: var(--hair-2);
 }
 
-.icon-btn.is-on {
-  color: var(--fg);
-  background: rgba(236, 230, 216, 0.08);
-}
-
-.icon-btn:active,
-.hold-btn:active {
-  transform: translateY(1px);
-  background: rgba(198, 254, 31, 0.14);
-  color: var(--lime);
-}
-
 /* ------------------------------------------------------------ toast */
 
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 104px;
+  top: 34px;
   transform: translateX(-50%);
   padding: 9px 14px;
   border-radius: 999px;
@@ -487,7 +294,7 @@ button {
   font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--fg);
-  animation: toast 3.4s var(--ease) forwards;
+  animation: toast 3.6s var(--ease) forwards;
   pointer-events: none;
   white-space: nowrap;
 }
@@ -495,7 +302,7 @@ button {
 @keyframes toast {
   0% {
     opacity: 0;
-    transform: translate(-50%, 6px);
+    transform: translate(-50%, -6px);
   }
   10%,
   85% {
@@ -521,75 +328,31 @@ button {
   color: var(--fg-2);
 }
 
-/* ------------------------------------------------------------ small screens */
+/* ------------------------------------------------------------ small windows */
 
-@media (max-width: 1100px) {
-  .gesture-does {
-    display: none;
-  }
-  .gesture {
-    padding: 7px 10px 7px 8px;
-  }
-}
-
-@media (max-width: 860px) {
+@media (max-width: 700px) {
   .masthead {
-    top: 18px;
-    left: 18px;
+    top: 26px;
+    left: 26px;
+  }
+  .supply {
+    top: 26px;
+    right: 26px;
   }
   .wordmark {
     font-size: 18px;
   }
-  .supply {
-    top: 18px;
-    right: 18px;
+  .hint-line {
+    font-size: 13.5px;
   }
   .dock {
-    grid-template-columns: 1fr auto;
-    grid-template-areas:
-      'bearer actions'
-      'legend legend';
-    padding: 0 16px max(16px, env(safe-area-inset-bottom));
-    gap: 14px;
+    bottom: max(22px, env(safe-area-inset-bottom));
   }
-  .bearer {
-    grid-area: bearer;
-  }
-  .actions {
-    grid-area: actions;
-  }
-  .legend {
-    grid-area: legend;
-    justify-content: space-between;
-  }
-  .gesture-text {
+}
+
+@media (max-height: 520px) {
+  .hint-line {
     display: none;
-  }
-  .gesture {
-    flex: 1;
-    justify-content: center;
-  }
-  .icon-btn span {
-    display: none;
-  }
-  .icon-btn {
-    width: 38px;
-    padding: 0;
-    justify-content: center;
-  }
-  .hold-btn {
-    width: auto;
-    padding: 0 12px;
-  }
-  .hold-btn span {
-    display: inline;
-  }
-  .toast,
-  .hint {
-    bottom: 150px;
-  }
-  .invite-title {
-    font-size: 25px;
   }
 }
 

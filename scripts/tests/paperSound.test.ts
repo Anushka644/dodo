@@ -3,7 +3,7 @@
 // behaviour (what gets scheduled, when, and that everything is released) — not how it
 // sounds. scripts/tests/paperSound.render.test.ts renders the real thing offline.
 
-import type { PaperSoundsApi } from '../../src/contracts';
+import type { PaperSoundsApi } from '../../src/paperSound';
 
 // ------------------------------------------------------------ mock WebAudio
 

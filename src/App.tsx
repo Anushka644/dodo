@@ -1,66 +1,42 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
-import { Engine, type HudState } from './engine';
+import { useEffect, useRef, useState } from 'react';
+import { BordersEngine, type BordersHud } from './borders/engine';
+import { COUNTRIES, countryByCode, formatMoney } from './borders/countries';
 import { sound } from './sound';
-import { DEFAULT_NAME } from './note/seed';
-import type { Pose } from './contracts';
 
-type Gesture = { pose: Pose; name: string; does: string; icon: ReactNode; keys?: string };
-
-const HAND_GESTURES: Gesture[] = [
-  { pose: 'open', name: 'Open hand', does: 'catch it', icon: <IconOpen /> },
-  { pose: 'pinch', name: 'Pinch', does: 'hold · flick to throw', icon: <IconPinch /> },
-  { pose: 'fist', name: 'Fist', does: 'crumple', icon: <IconFist /> },
-  { pose: 'point', name: 'Point', does: 'UV torch', icon: <IconPoint /> },
-  { pose: 'rub', name: 'Rub fingers', does: 'print money', icon: <IconRub /> },
-];
-
-const MOUSE_GESTURES: Gesture[] = [
-  { pose: 'pinch', name: 'Drag', does: 'hold · fling', icon: <IconPinch />, keys: 'drag' },
-  { pose: 'fist', name: 'Hold C', does: 'crumple', icon: <IconFist />, keys: 'C' },
-  { pose: 'point', name: 'Hold Shift', does: 'UV torch', icon: <IconPoint />, keys: '⇧' },
-  { pose: 'rub', name: 'Hold Space', does: 'print money', icon: <IconRub />, keys: '␣' },
-];
-
+const params = new URLSearchParams(location.search);
+const countryIndex = countryByCode(params.get('c'));
 const coarse = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
+const narrow = typeof window !== 'undefined' && window.innerWidth < 640;
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const overlayRef = useRef<HTMLCanvasElement>(null);
-  const engineRef = useRef<Engine | null>(null);
+  const engineRef = useRef<BordersEngine | null>(null);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [hud, setHud] = useState<HudState>({
-    mode: 'intro',
-    hands: 0,
-    poses: [],
-    printed: 0,
-    tracking: 'off',
-    loadingMsg: '',
-    holding: false,
-  });
-  const [name, setName] = useState('');
+  const [hud, setHud] = useState<BordersHud | null>(null);
   const [soundOn, setSoundOn] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
+  const [tilt, setTilt] = useState(false);
   const toastTimer = useRef(0);
+  const country = COUNTRIES[countryIndex];
 
   const flash = (msg: string) => {
     setToast(msg);
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 3400);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3600);
   };
 
   useEffect(() => {
     const canvas = canvasRef.current!;
-    let engine: Engine;
+    let engine: BordersEngine;
     try {
-      engine = new Engine(canvas);
+      engine = new BordersEngine(canvas, countryIndex);
     } catch (e) {
       console.error(e);
       setFailed(true);
       return;
     }
     engineRef.current = engine;
-    engine.overlay = overlayRef.current!.getContext('2d');
     engine.onHud = setHud;
     engine.init().then(() => {
       setReady(true);
@@ -72,98 +48,39 @@ export function App() {
       window.removeEventListener('resize', onResize);
       engine.dispose();
     };
-  }, []);
+  }, [country.name]);
 
-  // keys stand in for the gestures when there's no camera
   useEffect(() => {
-    const set = (e: KeyboardEvent, on: boolean) => {
-      if ((e.target as HTMLElement)?.tagName === 'INPUT') {
-        if (on && (e.key === 'Escape' || e.key === 'Enter')) (e.target as HTMLElement).blur();
-        return;
-      }
+    const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      const engine = engineRef.current;
-      if (!engine) return;
-      if (e.code === 'Space') {
-        e.preventDefault();
-        engine.setPrinting(on);
-      } else if (e.key === 'Shift') engine.setTorch(on);
-      else if (e.key === 'c' || e.key === 'C') engine.setCrumple(on);
-      else if (on && (e.key === 'r' || e.key === 'R')) engine.summon();
+      if (e.key === 'p' || e.key === 'P') engineRef.current?.print(3);
+      if (e.key === 'o' || e.key === 'O') openBorder();
     };
-    const down = (e: KeyboardEvent) => set(e, true);
-    const up = (e: KeyboardEvent) => set(e, false);
-    const blur = () => {
-      engineRef.current?.setPrinting(false);
-      engineRef.current?.setTorch(false);
-      engineRef.current?.setCrumple(false);
-    };
-    window.addEventListener('keydown', down);
-    window.addEventListener('keyup', up);
-    window.addEventListener('blur', blur);
-    return () => {
-      window.removeEventListener('keydown', down);
-      window.removeEventListener('keyup', up);
-      window.removeEventListener('blur', blur);
-    };
-  }, []);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
-  useEffect(() => {
-    const canvas = canvasRef.current!;
-    const onWheel = (e: WheelEvent) => {
-      e.preventDefault();
-      engineRef.current?.wheel(e.deltaY);
-    };
-    canvas.addEventListener('wheel', onWheel, { passive: false });
-    return () => canvas.removeEventListener('wheel', onWheel);
-  }, []);
-
-  useEffect(() => {
-    if (hud.tracking === 'error' && hud.loadingMsg) flash(hud.loadingMsg);
-  }, [hud.tracking, hud.loadingMsg]);
-
-  const useHands = async () => {
-    sound.wake();
-    sound.click();
-    const ok = await engineRef.current?.startCamera();
-    if (ok) flash('Show the camera your open hand.');
+  const openBorder = () => {
+    const w = engineRef.current?.openBorder();
+    if (!w) flash('Allow pop-ups for this page to open a border.');
   };
 
-  const useMouse = () => {
+  const enableTilt = async () => {
     sound.wake();
-    sound.click();
-    engineRef.current?.useMouse();
-    flash(coarse ? 'Drag the note. Hold the buttons to print or shine UV.' : 'Drag the note. Hold Space to print money.');
-  };
-
-  const toggleCamera = () => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    if (hud.tracking === 'on' || hud.tracking === 'loading') {
-      engine.stopCamera();
-      engine.useMouse();
-    } else void useHands();
-  };
-
-  const onName = (v: string) => {
-    sound.wake();
-    setName(v);
-    engineRef.current?.setName(v);
-  };
-
-  const save = async () => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    sound.wake();
-    sound.press();
-    const blob = await engine.capture();
-    if (!blob) return;
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `dodo-reserve-${engine.issue.serial.replace(/\s+/g, '')}.png`;
-    a.click();
-    window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    flash('Saved. Spend it wisely.');
+    const DOE = window.DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
+    try {
+      if (DOE?.requestPermission && (await DOE.requestPermission()) !== 'granted') return;
+    } catch {
+      return;
+    }
+    const onTilt = (e: DeviceOrientationEvent) => {
+      const g = ((e.gamma ?? 0) * Math.PI) / 180; // left/right
+      const b = ((e.beta ?? 90) * Math.PI) / 180; // front/back
+      engineRef.current?.setTilt({ x: Math.sin(g), y: Math.max(0.15, Math.sin(b)) });
+    };
+    window.addEventListener('deviceorientation', onTilt);
+    setTilt(true);
+    flash('Tilt the phone. The money slides.');
   };
 
   const toggleSound = () => {
@@ -173,134 +90,106 @@ export function App() {
     setSoundOn(next);
   };
 
-  const pointer = (e: React.PointerEvent, down: boolean | null) => {
-    if (e.button === 2 && down !== null) {
-      engineRef.current?.setTorch(down);
-      return;
-    }
-    if (down) sound.wake();
-    engineRef.current?.pointer(e.clientX, e.clientY, down);
+  const pointer = (kind: 'down' | 'move' | 'up') => (e: React.PointerEvent) => {
+    if (kind === 'down') (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    engineRef.current?.pointer(kind, e.pointerId, e.clientX, e.clientY);
   };
 
-  const intro = hud.mode === 'intro';
-  const camera = hud.mode === 'camera';
-  const legend = camera ? HAND_GESTURES : MOUSE_GESTURES;
-  const active = new Set(hud.poses);
-  const circulation = hud.printed + 1;
-  const inflation = hud.printed * 100;
+  // the window's own title bar and tab icon join in: balance and currency
+  useEffect(() => {
+    const n = hud?.notesHere ?? 0;
+    document.title = `${formatMoney(country, n)} · ${country.name}`;
+  }, [hud?.notesHere, country]);
+
+  useEffect(() => {
+    const c = document.createElement('canvas');
+    c.width = c.height = 64;
+    const g = c.getContext('2d')!;
+    g.fillStyle = '#0b0b0a';
+    g.beginPath();
+    g.roundRect(0, 0, 64, 64, 14);
+    g.fill();
+    g.fillStyle = '#c6fe1f';
+    g.font = `600 ${country.symbol.length > 1 ? 26 : 40}px Georgia, "Times New Roman", serif`;
+    g.textAlign = 'center';
+    g.textBaseline = 'middle';
+    g.fillText(country.symbol, 32, 35);
+    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    link.type = 'image/png';
+    link.href = c.toDataURL('image/png');
+  }, [country]);
+
+  const here = hud?.notesHere ?? 0;
+  const alone = (hud?.open.length ?? 1) <= 1;
+  const reserves = formatMoney(country, here);
 
   return (
-    <div className={`app mode-${hud.mode} ${ready ? 'is-ready' : ''} ${active.has('point') ? 'is-uv' : ''}`}>
+    <div className={`app ${ready ? 'is-ready' : ''} ${alone ? 'is-alone' : ''}`}>
       <canvas
         ref={canvasRef}
         className="stage"
-        onPointerMove={(e) => pointer(e, null)}
-        onPointerDown={(e) => {
-          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-          pointer(e, true);
-        }}
-        onPointerUp={(e) => pointer(e, false)}
-        onPointerCancel={(e) => pointer(e, false)}
-        onPointerLeave={() => engineRef.current?.pointerLeave()}
+        onPointerDown={pointer('down')}
+        onPointerMove={pointer('move')}
+        onPointerUp={pointer('up')}
+        onPointerCancel={pointer('up')}
         onContextMenu={(e) => e.preventDefault()}
-        onDoubleClick={() => engineRef.current?.summon()}
-        aria-label="A banknote of the Dodo Reserve. Hold it with your hand on camera, or drag it with the pointer."
         role="img"
+        aria-label={`${country.name}: banknotes of the Dodo Reserve, printed in ${country.currency}. Drag and throw them; throw one hard at the edge to send it to another window.`}
       />
-      <canvas ref={overlayRef} className="overlay" aria-hidden />
 
       <header className="masthead">
-        <div className="wordmark">Specimen</div>
-        <div className="sub mono">The Dodo Reserve · money you can hold</div>
+        <div className="wordmark">{country.name}</div>
+        <div className="sub mono">
+          {country.currency} · 1 DODO = {formatMoney(country, 1)}
+        </div>
       </header>
 
       <section className="supply mono" aria-live="polite">
         <div className="supply-row">
-          <span className="supply-label">In circulation</span>
-          <span className="supply-value">
-            {circulation.toLocaleString()} <span className="supply-unit">DODO</span>
-          </span>
+          <span className="supply-label">Held here</span>
+          <span className="supply-value">{reserves}</span>
         </div>
-        <div className={`supply-row inflation ${hud.printed > 0 ? 'is-on' : ''}`}>
-          <span className="supply-label">Inflation</span>
-          <span className="supply-value">{inflation.toLocaleString()}%</span>
-        </div>
+        <ol className="countries" aria-label="Countries open on this desktop">
+          {(hud?.open ?? [{ country: countryIndex, self: true }]).map((o, i) => (
+            <li key={`${o.country}-${i}`} className={o.self ? 'is-self' : ''} title={COUNTRIES[o.country].name}>
+              {COUNTRIES[o.country].code}
+            </li>
+          ))}
+        </ol>
       </section>
 
-      {intro && ready && (
-        <section className="invite" role="dialog" aria-label="How do you want to hold the money?">
-          <h1 className="invite-title">Money you can hold.</h1>
-          <p className="invite-line">
-            Turn on your camera and the note jumps into your hand. Pinch it, throw it, crumple it, shine a UV torch from your fingertip — and rub your
-            fingers together to print more.
-          </p>
-          <div className="invite-actions">
-            <button className="btn btn-primary" onClick={useHands} autoFocus>
-              <span className="led" /> Use my hands
+      <footer className="dock">
+        <p className="hint-line">
+          {alone
+            ? narrow || coarse
+              ? 'Drag a note and throw it. On a laptop, open a second country and send money across the desktop.'
+              : 'Every window is a country. Open a border, then throw a note hard at the edge.'
+            : 'Throw hard at an edge to clear customs. Overlap two windows and the border opens.'}
+        </p>
+        <div className="actions">
+          {!(narrow || coarse) && (
+            <button className="btn btn-primary" onClick={openBorder}>
+              <span className="led" /> Open a border
             </button>
-            <button className="btn" onClick={useMouse}>
-              Use the {coarse ? 'touchscreen' : 'mouse'}
+          )}
+          {(narrow || coarse) && !tilt && (
+            <button className="btn btn-primary" onClick={enableTilt}>
+              <span className="led" /> Tilt to move money
             </button>
-          </div>
-          <p className="invite-fine mono">The camera stays on this page. Nothing is recorded or sent.</p>
-        </section>
-      )}
-
-      {hud.tracking === 'loading' && <div className="status mono">{hud.loadingMsg}</div>}
-      {camera && hud.tracking === 'on' && hud.hands === 0 && <div className="hint mono">Raise an open hand to the camera</div>}
-
-      {!intro && (
-        <footer className="dock">
-          <label className="bearer">
-            <span className="mono bearer-label">Issued to</span>
-            <input
-              value={name}
-              onChange={(e) => onName(e.target.value)}
-              placeholder={DEFAULT_NAME}
-              maxLength={28}
-              spellCheck={false}
-              autoComplete="off"
-              aria-label="Name on the note"
-            />
-          </label>
-
-          <ol className="legend" aria-label="Gestures">
-            {legend.map((g) => (
-              <li key={g.name} className={`gesture ${active.has(g.pose) ? 'is-active' : ''}`}>
-                <span className="gesture-icon">{g.icon}</span>
-                <span className="gesture-text">
-                  <span className="gesture-name">{g.name}</span>
-                  <span className="gesture-does mono">{g.does}</span>
-                </span>
-              </li>
-            ))}
-          </ol>
-
-          <div className="actions">
-            {coarse && !camera && (
-              <>
-                <HoldButton label="Print" onHold={(on) => engineRef.current?.setPrinting(on)} />
-                <HoldButton label="UV" onHold={(on) => engineRef.current?.setTorch(on)} />
-              </>
-            )}
-            <button
-              className={`icon-btn ${hud.tracking === 'on' ? 'is-on' : ''}`}
-              onClick={toggleCamera}
-              title={hud.tracking === 'on' ? 'Turn the camera off' : 'Use your hands (camera)'}
-            >
-              <IconCamera />
-              <span className="mono">{hud.tracking === 'on' ? (hud.hands ? `${hud.hands} hand${hud.hands > 1 ? 's' : ''}` : 'No hands') : 'Hands'}</span>
-            </button>
-            <button className="icon-btn" onClick={save} title="Save this moment (PNG)">
-              <IconSave />
-              <span className="mono">Keep</span>
-            </button>
-            <button className="icon-btn" onClick={toggleSound} title={soundOn ? 'Mute' : 'Sound on'} aria-pressed={soundOn}>
-              {soundOn ? <IconSound /> : <IconMute />}
-            </button>
-          </div>
-        </footer>
-      )}
+          )}
+          <button className="btn" onClick={() => engineRef.current?.print(3)} title="Print three more notes (P)">
+            Print money
+          </button>
+          <button className="icon-btn" onClick={toggleSound} title={soundOn ? 'Mute' : 'Sound on'} aria-pressed={soundOn}>
+            {soundOn ? <IconSound /> : <IconMute />}
+          </button>
+        </div>
+      </footer>
 
       {toast && (
         <div className="toast mono" key={toast} role="status">
@@ -316,110 +205,21 @@ export function App() {
   );
 }
 
-function HoldButton({ label, onHold }: { label: string; onHold: (on: boolean) => void }) {
-  return (
-    <button
-      className="icon-btn hold-btn"
-      onPointerDown={(e) => {
-        e.preventDefault();
-        sound.wake();
-        onHold(true);
-      }}
-      onPointerUp={() => onHold(false)}
-      onPointerLeave={() => onHold(false)}
-      onPointerCancel={() => onHold(false)}
-      onContextMenu={(e) => e.preventDefault()}
-    >
-      <span className="mono">{label}</span>
-    </button>
-  );
-}
-
-// ------------------------------------------------------------------ icons
-// Line drawings of hands, kept as simple as the gestures themselves.
-
 const icon = {
-  width: 22,
-  height: 22,
+  width: 18,
+  height: 18,
   viewBox: '0 0 24 24',
   fill: 'none',
   stroke: 'currentColor',
-  strokeWidth: 1.4,
+  strokeWidth: 1.5,
   strokeLinecap: 'round' as const,
   strokeLinejoin: 'round' as const,
   'aria-hidden': true,
 };
 
-function IconOpen() {
-  return (
-    <svg {...icon}>
-      <path d="M7 13 V6.5 a1.2 1.2 0 0 1 2.4 0 V11 M9.4 11 V4.8 a1.2 1.2 0 0 1 2.4 0 V11 M11.8 11 V5.6 a1.2 1.2 0 0 1 2.4 0 V11.5 M14.2 11.5 V7.6 a1.2 1.2 0 0 1 2.4 0 V14 c0 4 -2.4 6.5 -5.6 6.5 c-2.6 0 -3.9 -1.2 -5.2 -3.4 L4.2 13.6 a1.3 1.3 0 0 1 2.2 -1.3 L7 13" />
-    </svg>
-  );
-}
-
-function IconPinch() {
-  return (
-    <svg {...icon}>
-      <path d="M8 20 c-2.4 -2 -3.4 -4.4 -2.6 -7.2 L8.6 8.4 a1.4 1.4 0 0 1 2.4 1.4 L10 12" />
-      <path d="M10 12 L14.6 5.2 a1.4 1.4 0 0 1 2.4 1.5 L13.4 12.2" />
-      <path d="M13.4 12.2 c2 0.6 3.4 2 3.4 4.2 c0 2.2 -1.4 3.6 -3.4 3.6" />
-      <circle cx="15.9" cy="5.9" r="2.6" opacity="0.5" />
-    </svg>
-  );
-}
-
-function IconFist() {
-  return (
-    <svg {...icon}>
-      <path d="M6.5 10 a2 2 0 0 1 2 -2 h7 a2.5 2.5 0 0 1 2.5 2.5 v3.5 c0 3.6 -2.6 6 -6 6 h-1 c-2.6 0 -4.5 -2 -4.5 -4.5 Z" />
-      <path d="M8.5 8 v3 M11 8 v3 M13.5 8 v3 M16 8.3 v2.7" />
-      <path d="M6.5 12.5 h4.5 a1.5 1.5 0 0 1 0 3 h-2" />
-    </svg>
-  );
-}
-
-function IconPoint() {
-  return (
-    <svg {...icon}>
-      <path d="M10 13 V4.4 a1.3 1.3 0 0 1 2.6 0 V12 M12.6 11 h1.6 a1.4 1.4 0 0 1 1.4 1.4 v0.4 M15.6 12.6 a1.3 1.3 0 0 1 2.6 0.4 v2.2 c0 3.2 -2.4 5.3 -5.4 5.3 c-2.4 0 -3.8 -1 -5 -3 L6.2 14.6 a1.3 1.3 0 0 1 2.1 -1.4 L10 15" />
-      <path d="M8 3 l-1.4 -1.2 M14.6 3 l1.4 -1.2 M11.3 1 v-0.4" opacity="0.7" />
-    </svg>
-  );
-}
-
-function IconRub() {
-  return (
-    <svg {...icon}>
-      <path d="M6 20 c-1.6 -2 -2 -4.4 -1 -7 L8 7.6 a1.3 1.3 0 0 1 2.3 1.2 L9 12" />
-      <path d="M9 12 L12.6 4.4 a1.3 1.3 0 0 1 2.4 1 L12.8 10.6 M12.8 10.6 L15.6 6 a1.3 1.3 0 0 1 2.3 1.2 L15 12.4" />
-      <path d="M15 12.4 c1.6 1 2.2 2.6 1.8 4.4 c-0.5 2.2 -2.6 3.4 -5 3.2" />
-      <path d="M18.8 2.6 c1 0.8 1.6 1.9 1.6 3.2 M20.6 1 c1.4 1.2 2.2 2.8 2.2 4.6" opacity="0.7" />
-    </svg>
-  );
-}
-
-function IconCamera() {
-  return (
-    <svg {...icon} width={18} height={18}>
-      <path d="M4 8 h3 l2 -2.5 h6 l2 2.5 h3 v11 H4 Z" />
-      <circle cx="12" cy="13" r="3.5" />
-    </svg>
-  );
-}
-
-function IconSave() {
-  return (
-    <svg {...icon} width={18} height={18}>
-      <path d="M12 4 v11 M7.5 10.5 L12 15 l4.5 -4.5" />
-      <path d="M5 19 h14" />
-    </svg>
-  );
-}
-
 function IconSound() {
   return (
-    <svg {...icon} width={18} height={18}>
+    <svg {...icon}>
       <path d="M5 10 h3 l4 -4 v12 l-4 -4 H5 Z" />
       <path d="M15.5 9.5 a3.5 3.5 0 0 1 0 5 M18 7 a7 7 0 0 1 0 10" />
     </svg>
@@ -428,7 +228,7 @@ function IconSound() {
 
 function IconMute() {
   return (
-    <svg {...icon} width={18} height={18}>
+    <svg {...icon}>
       <path d="M5 10 h3 l4 -4 v12 l-4 -4 H5 Z" />
       <path d="M16 10 l4 4 M20 10 l-4 4" />
     </svg>
