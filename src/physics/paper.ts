@@ -25,16 +25,18 @@ export const PAPER = {
   stretch: 1, // structural stiffness per sweep (1 = inextensible)
   shear: 0.7,
   bend: 0.5, // local smoothness (linear three-particle bending)
+  camber: 0.06, // natural bow of a note, world units of sag at the ends (also seeds tumbling)
   shapeMatch: 3.5, // global flatness: how fast bends relax back to flat, 1/s
   deformDamping: 5, // damps flexing relative to the rigid motion (not the fall itself), 1/s
   damping: 0.08, // plain velocity damping, 1/s
 
-  dragNormal: 1.7, // quadratic face drag (sets terminal speed ≈ sqrt(g / dragNormal))
-  dragLinear: 0.6, // linear face drag
+  dragNormal: 1.1, // quadratic face drag (sets terminal speed ≈ sqrt(g / dragNormal))
+  dragLinear: 0.3, // linear face drag
   dragTangent: 0.25, // edge-on drag
-  lift: 3, // thin-plate lift: face force ∝ edgewise speed × (u·n); makes notes glide and tip
+  lift: 1.5, // thin-plate lift: face force ∝ edgewise speed × (u·n); makes notes glide and tip
   leadingEdge: 3, // centre of pressure shift toward the leading edge (3 ≈ quarter chord) — the flutter
   turbulence: 0.35, // gusts on top of env.wind, world units/s
+  gustShear: 2, // how much the gust varies across the sheet, per unit of distance (relative to turbulence)
 
   attachRate: 34, // how hard attach() pulls at weight 1, 1/s
   attachFalloff: 0.85, // edges are held less firmly than the middle, so they flex
@@ -251,6 +253,8 @@ export class PaperSheet implements PaperSheetApi {
   private aeroF: Float32Array;
   private aeroW: Float32Array;
   private kappa: Float32Array;
+  /** this note's natural bow, out of plane, at camber = 1 (no real note is perfectly flat) */
+  private bow: Float32Array;
   private crumpleOff: Float32Array | null = null;
 
   private pinStrength: Float32Array;
@@ -313,6 +317,21 @@ export class PaperSheet implements PaperSheetApi {
     const r = rng(this.seed * 2654435761);
     this.gustPhase = Float64Array.from({ length: 8 }, () => r() * Math.PI * 2);
     this.floorLift = 0.002 + r() * 0.03;
+    // a gentle cylindrical bow about a random axis: realistic, and it means air
+    // meeting the note edge-on still finds something to push on, so it tips
+    this.bow = new Float32Array(this.count);
+    const ba = r() * Math.PI, bc = Math.cos(ba), bs = Math.sin(ba);
+    const bm = (r() < 0.5 ? -1 : 1) * (0.5 + 0.5 * r());
+    const { qx, qy } = this.topo;
+    let bmax = 0;
+    let bmean = 0;
+    for (let i = 0; i < this.count; i++) bmax = Math.max(bmax, Math.abs(qx[i] * bc + qy[i] * bs));
+    for (let i = 0; i < this.count; i++) {
+      const u = (qx[i] * bc + qy[i] * bs) / bmax;
+      this.bow[i] = bm * u * u;
+      bmean += this.bow[i] / this.count;
+    }
+    for (let i = 0; i < this.count; i++) this.bow[i] -= bmean;
     this.placeFlat([0, 0, 0], [1, 0, 0], [0, 1, 0]);
   }
 
@@ -337,11 +356,14 @@ export class PaperSheet implements PaperSheetApi {
     const nx = ry * uz - rz * uy, ny = rz * ux - rx * uz, nz = rx * uy - ry * ux;
     const { qx, qy } = this.topo;
     const x = this.positions;
+    const bow = this.bow;
+    const cb = PAPER.camber;
     for (let i = 0; i < this.count; i++) {
       const p = i * 3;
-      x[p] = center[0] + rx * qx[i] + ux * qy[i];
-      x[p + 1] = center[1] + ry * qx[i] + uy * qy[i];
-      x[p + 2] = center[2] + rz * qx[i] + uz * qy[i];
+      const b = bow[i] * cb;
+      x[p] = center[0] + rx * qx[i] + ux * qy[i] + nx * b;
+      x[p + 1] = center[1] + ry * qx[i] + uy * qy[i] + ny * b;
+      x[p + 2] = center[2] + rz * qx[i] + uz * qy[i] + nz * b;
       this.normals[p] = nx;
       this.normals[p + 1] = ny;
       this.normals[p + 2] = nz;
@@ -630,12 +652,16 @@ export class PaperSheet implements PaperSheetApi {
       sx *= ic; sy *= ic; sz *= ic;
       if (this.fitRotation(ax, ay, az, bx, by, bz)) {
         const fr = this.frame;
+        const cb = P.camber;
+        const bow = this.bow;
+        const nx = (fr[1] * fr[5] - fr[2] * fr[4]) * cb, ny = (fr[2] * fr[3] - fr[0] * fr[5]) * cb, nz = (fr[0] * fr[4] - fr[1] * fr[3]) * cb;
         for (let i = 0; i < n; i++) {
           if (w[i] === 0) continue;
           const p = i * 3;
-          x[p] += shape * (sx + fr[0] * qx[i] + fr[3] * qy[i] - x[p]);
-          x[p + 1] += shape * (sy + fr[1] * qx[i] + fr[4] * qy[i] - x[p + 1]);
-          x[p + 2] += shape * (sz + fr[2] * qx[i] + fr[5] * qy[i] - x[p + 2]);
+          const b = bow[i];
+          x[p] += shape * (sx + fr[0] * qx[i] + fr[3] * qy[i] + nx * b - x[p]);
+          x[p + 1] += shape * (sy + fr[1] * qx[i] + fr[4] * qy[i] + ny * b - x[p + 1]);
+          x[p + 2] += shape * (sz + fr[2] * qx[i] + fr[5] * qy[i] + nz * b - x[p + 2]);
         }
       }
     }
@@ -839,14 +865,18 @@ export class PaperSheet implements PaperSheetApi {
     const SW = this.topo.width, SH = this.topo.height;
     const kmax = 1 / h; // never more than stops the face-on motion in one substep
 
-    // gusts: a slowly wandering breeze plus a rocking updraft gradient across the sheet
+    // gusts: a slowly wandering breeze plus a shear across the sheet (wind along d,
+    // varying along e) — the shear is what nudges a sheet into rocking whatever its pose
     const T = this.time, ph = this.gustPhase, A = this.turbulence;
     const gwx = env.wind[0] + A * (Math.sin(T * 1.3 + ph[0]) + 0.5 * Math.sin(T * 2.9 + ph[1]));
     const gwy = env.wind[1] + A * 0.6 * Math.sin(T * 1.7 + ph[2]);
     const gwz = env.wind[2] + A * (Math.sin(T * 1.1 + ph[3]) + 0.5 * Math.sin(T * 2.3 + ph[4]));
-    const rock = A * 1.4 * Math.sin(T * 2.1 + ph[5]);
-    const ra = T * 0.4 + ph[6];
-    const rdx = Math.cos(ra), rdz = Math.sin(ra);
+    const shear = A * P.gustShear * Math.sin(T * 2.1 + ph[5]);
+    let ex = Math.sin(T * 0.37 + ph[6]), ey = Math.sin(T * 0.29 + ph[7]), ez = Math.cos(T * 0.41 + ph[6]);
+    let dx = Math.cos(T * 0.31 + ph[7]), dy = Math.sin(T * 0.43 + ph[5]), dz = Math.sin(T * 0.23 + ph[4]);
+    const el = 1 / Math.sqrt(ex * ex + ey * ey + ez * ez), dl = shear / Math.sqrt(dx * dx + dy * dy + dz * dz);
+    ex *= el; ey *= el; ez *= el;
+    dx *= dl; dy *= dl; dz *= dl;
 
     for (let k = 0; k < idx.length; k += 3) {
       const a = idx[k] * 3, b = idx[k + 1] * 3, c = idx[k + 2] * 3;
@@ -863,9 +893,10 @@ export class PaperSheet implements PaperSheetApi {
       const tx = (x[a] + x[b] + x[c]) / 3 - cx;
       const ty = (x[a + 1] + x[b + 1] + x[c + 1]) / 3 - cy;
       const tz = (x[a + 2] + x[b + 2] + x[c + 2]) / 3 - cz;
-      const ux = (v[a] + v[b] + v[c]) / 3 - gwx;
-      const uy = (v[a + 1] + v[b + 1] + v[c + 1]) / 3 - gwy - rock * (tx * rdx + tz * rdz);
-      const uz = (v[a + 2] + v[b + 2] + v[c + 2]) / 3 - gwz;
+      const se = tx * ex + ty * ey + tz * ez;
+      const ux = (v[a] + v[b] + v[c]) / 3 - gwx - se * dx;
+      const uy = (v[a + 1] + v[b + 1] + v[c + 1]) / 3 - gwy - se * dy;
+      const uz = (v[a + 2] + v[b + 2] + v[c + 2]) / 3 - gwz - se * dz;
       const vn = ux * nx + uy * ny + uz * nz;
       const vtx = ux - vn * nx, vty = uy - vn * ny, vtz = uz - vn * nz;
       const vt2 = vtx * vtx + vty * vty + vtz * vtz;

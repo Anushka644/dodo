@@ -33,7 +33,9 @@ vec3 environment(vec3 R) {
   vec2 uv = vec2(0.5 + R.x * 0.45, 0.5 - R.y * 0.45);
   uv.x = 1.0 - uv.x;
   vec3 cam = textureLod(tVideo, clamp(uv, 0.0, 1.0), 3.0).rgb;
-  return mix(studio, cam * cam * 1.6, 0.75);
+  // desaturate: the room should tint the foil, not paint it
+  cam = mix(vec3(dot(cam, vec3(0.3, 0.59, 0.11))), cam, 0.55);
+  return mix(studio, cam * cam * 1.6, 0.7);
 }
 
 void main() {
@@ -92,8 +94,8 @@ void main() {
   float fbright;
   vec3 rainbow = foilDiffraction(p, normalize(vec3(Ht.xy * 2.2, max(Ht.z, 0.05))), fbright);
   float glitter = step(0.985, hash12(floor(p * 2400.0))) * pow(nh, 3.0);
-  vec3 metal = S.metalTint * (env * 0.85 + uKeyCol * (0.12 * nl + 1.4 * pow(nh, 70.0) + glitter * S.foil * 3.0))
-             + rainbow * (uKeyCol * 0.9 + env * 0.6) * fbright * S.foil;
+  vec3 metal = S.metalTint * (env * 0.6 + uKeyCol * (0.14 * nl + 1.4 * pow(nh, 70.0) + glitter * S.foil * 3.0))
+             + rainbow * (uKeyCol * 0.9 + env * 0.3) * fbright * S.foil;
   color = mix(color, metal, S.metal);
 
   // a hint of the room in the glossy intaglio too

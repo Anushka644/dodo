@@ -49,8 +49,7 @@ interface Note {
   print: number;
   rest: number; // seconds lying still on the floor
   dying: number; // > 0 while sinking away
-  heldBy: number | null; // hand id pinching it
-  pin: number;
+  holds: { hand: number; pin: number; since: number }[]; // pinches holding it (two hands can share one)
   carriedBy: number | null; // hand id it rests on (-1 = the stand)
   carry: number; // 0..1 attach weight, ramps up so it flies to the palm
   crumple: number;
@@ -111,6 +110,7 @@ export class Engine {
   // the mouse, standing in for a hand
   private mouse = { x: 0.5, y: 0.5, down: false, inside: false, print: false, torch: false, crumple: false, depth: 1.2 };
   private standTilt: V2 = [0, 0];
+  private standLift = 0.55;
 
   private viewProj!: Mat4;
   private aspect = 1;
@@ -227,8 +227,7 @@ export class Engine {
       print: 1,
       rest: 0,
       dying: 0,
-      heldBy: null,
-      pin: -1,
+      holds: [],
       carriedBy: null,
       carry: 0,
       crumple: 0,
@@ -257,7 +256,9 @@ export class Engine {
   private standPose(): { c: V3; r: V3; u: V3 } {
     const [tx, ty] = this.standTilt;
     const t = (performance.now() - this.start) / 1000;
-    const c: V3 = [0, 0.3 + Math.sin(t * 0.9) * 0.05, 2.7];
+    // during the invitation the note floats higher, clear of the card
+    this.standLift += ((this.mode === 'intro' ? 0.55 : 0) - this.standLift) * 0.05;
+    const c: V3 = [0, 0.3 + this.standLift + Math.sin(t * 0.9) * 0.05, 2.7];
     const yaw = tx * 0.6 + Math.sin(t * 0.45) * 0.06;
     const pitch = ty * 0.45 + Math.sin(t * 0.7) * 0.03;
     const r: V3 = [Math.cos(yaw), 0, -Math.sin(yaw)];
@@ -272,10 +273,14 @@ export class Engine {
     note.carry = snap ? 1 : 0;
   }
 
-  private release(note: Note) {
-    if (note.pin >= 0) note.sheet.unpin(note.pin);
-    note.pin = -1;
-    note.heldBy = null;
+  /** let go with one hand (or every hand) */
+  private release(note: Note, hand?: number) {
+    for (const h of note.holds) if (hand === undefined || h.hand === hand) note.sheet.unpin(h.pin);
+    note.holds = hand === undefined ? [] : note.holds.filter((h) => h.hand !== hand);
+  }
+
+  private held(note: Note) {
+    return note.holds.length > 0;
   }
 
   private drop(note: Note) {
@@ -285,11 +290,11 @@ export class Engine {
   }
 
   /** the note (and particle) nearest a screen point, if it's within reach */
-  private pick(s: V2): { note: Note; index: number } | null {
+  private pick(s: V2, hand: number): { note: Note; index: number } | null {
     let best: { note: Note; index: number } | null = null;
     let bestD = PICK_RADIUS;
     for (const note of this.notes) {
-      if (note.dying > 0 || note.heldBy !== null) continue;
+      if (note.dying > 0 || note.holds.some((h) => h.hand === hand)) continue;
       const pos = note.sheet.positions;
       for (let i = 0; i < note.sheet.count; i += 2) {
         const sp = this.worldToScreen(pos, i * 3);
@@ -307,7 +312,7 @@ export class Engine {
     const rain = this.notes.filter((n) => !n.hero && n.dying === 0);
     if (rain.length >= MAX_RAIN) {
       // the oldest note in circulation is withdrawn
-      const old = rain.find((n) => n.heldBy === null && n.carriedBy === null) ?? rain[0];
+      const old = rain.find((n) => !this.held(n) && n.carriedBy === null) ?? rain[0];
       old.dying = 0.001;
     }
     this.printedCount++;
@@ -499,7 +504,7 @@ export class Engine {
 
   private letGo(id: number) {
     for (const n of this.notes) {
-      if (n.heldBy === id) this.release(n);
+      this.release(n, id);
       if (n.carriedBy === id) this.drop(n);
     }
   }
@@ -523,25 +528,26 @@ export class Engine {
 
   private act(dt: number) {
     for (const hand of this.hands.values()) {
-      const held = this.notes.find((n) => n.heldBy === hand.id);
+      const held = this.notes.find((n) => n.holds.some((h) => h.hand === hand.id));
       const carried = this.notes.find((n) => n.carriedBy === hand.id);
 
       // pinch: take hold of the nearest paper and let it dangle
+      // (a second hand can take the other end and pull it taut)
       if (hand.pinching && !held) {
-        const hit = this.pick(hand.pinchScreen);
+        const hit = this.pick(hand.pinchScreen, hand.id);
         if (hit) {
           const n = hit.note;
           if (n.carriedBy !== null) this.drop(n);
-          n.heldBy = hand.id;
-          n.pin = hit.index;
+          n.holds.push({ hand: hand.id, pin: hit.index, since: performance.now() });
           n.rest = 0;
           paperSound.grab();
         }
       } else if (!hand.pinching && held) {
-        this.release(held);
+        this.release(held, hand.id);
         paperSound.release();
       }
-      if (held && held.pin >= 0) held.sheet.pin(held.pin, hand.pinch, 1);
+      const grip = held?.holds.find((h) => h.hand === hand.id);
+      if (held && grip) held.sheet.pin(grip.pin, hand.pinch, 1);
 
       // fist: crumple whatever you have
       const squeezed = held ?? carried;
@@ -557,7 +563,7 @@ export class Engine {
       // open palm: money comes to you, and rests there
       if (hand.open && !held && !carried && hand.openFor > 0.35) {
         const free = this.notes
-          .filter((n) => n.heldBy === null && (n.carriedBy === null || n.carriedBy === -1) && n.dying === 0)
+          .filter((n) => !this.held(n) && (n.carriedBy === null || n.carriedBy === -1) && n.dying === 0)
           .sort((a, b) => Number(b.hero) - Number(a.hero) || dist(a.sheet.centroid(), hand.palm) - dist(b.sheet.centroid(), hand.palm))[0];
         if (free) {
           free.carriedBy = hand.id;
@@ -594,7 +600,7 @@ export class Engine {
 
     // the stand: the hero waits in mid-air until a hand takes it
     const h = this.hero;
-    if (h.carriedBy === -1 && h.heldBy === null) {
+    if (h.carriedBy === -1 && !this.held(h)) {
       h.carry = Math.min(1, h.carry + dt * 1.2);
       const { c, r, u } = this.standPose();
       h.sheet.attach(c, r, u, 0.2 + 0.75 * h.carry);
@@ -641,8 +647,9 @@ export class Engine {
       n.sheet.step(dt, env);
       const after = n.sheet.centroid();
       const speed = dist(before, after) / Math.max(dt, 1e-3);
-      if (n.heldBy === null && n.carriedBy === null) maxSpeed = Math.max(maxSpeed, speed);
-      if (n.heldBy === null && n.carriedBy === null && after[1] < this.floorY + 0.4 && speed < 0.2) n.rest += dt;
+      const free = !this.held(n) && n.carriedBy === null;
+      if (free) maxSpeed = Math.max(maxSpeed, speed);
+      if (free && after[1] < this.floorY + 0.4 && speed < 0.2) n.rest += dt;
       else n.rest = 0;
       if (!n.hero && n.rest > 9) n.dying = 0.001;
       const gone = Math.abs(after[0]) > halfW + 2.5 || after[1] < this.floorY - 2 || after[2] > EYE[2] - 0.8 || after[2] < -12;
@@ -655,7 +662,17 @@ export class Engine {
       }
       // held up high: backlit by the light at the top of the screen
       const sp = this.worldToScreen(after);
-      const lifted = n.heldBy !== null || (n.carriedBy !== null && n.carriedBy >= 0);
+      const lifted = this.held(n) || (n.carriedBy !== null && n.carriedBy >= 0);
+      // pulled taut between two hands past what paper allows: one grip slips
+      if (n.holds.length > 1) {
+        const [a, b] = n.holds;
+        const ha = this.hands.get(a.hand);
+        const hb = this.hands.get(b.hand);
+        if (ha && hb && dist(ha.pinch, hb.pinch) > NOTE_H * ASPECT * 1.25) {
+          this.release(n, (a.since < b.since ? a : b).hand);
+          paperSound.snap();
+        }
+      }
       n.backlight += ((lifted ? smooth(0.34, 0.12, sp[1]) : 0) - n.backlight) * Math.min(1, dt * 6);
       n.selected *= Math.exp(-dt * 10);
     }
@@ -665,7 +682,7 @@ export class Engine {
     // what a pinch would grab right now
     for (const hand of this.hands.values()) {
       if (hand.pinching || hand.pose === 'rub' || hand.pose === 'point') continue;
-      const hit = this.pick(hand.pinchScreen);
+      const hit = this.pick(hand.pinchScreen, hand.id);
       if (hit) hit.note.selected = 1;
     }
 
@@ -721,7 +738,7 @@ export class Engine {
           uWrinkle: n.sheet.wrinkle,
           uBacklight: n.backlight,
           uTrans: n.backlight,
-          uSelected: n.heldBy === null ? n.selected * 0.6 : 0,
+          uSelected: this.held(n) ? 0 : n.selected * 0.6,
         },
       }));
 
@@ -799,7 +816,7 @@ export class Engine {
         ctx.globalAlpha = 1;
       } else {
         const [px, py] = s(hand.pinch);
-        const holding = this.notes.some((n) => n.heldBy === hand.id);
+        const holding = this.notes.some((n) => n.holds.some((h) => h.hand === hand.id));
         ctx.strokeStyle = holding || hand.pinching ? 'rgba(198,254,31,0.95)' : 'rgba(236,230,216,0.5)';
         ctx.beginPath();
         ctx.arc(px, py, (hand.pinching ? 6 : 11) * k, 0, Math.PI * 2);
@@ -822,7 +839,7 @@ export class Engine {
       printed: this.printedCount,
       tracking: this.tracking,
       loadingMsg: this.loadingMsg,
-      holding: this.notes.some((n) => n.heldBy !== null || (n.carriedBy !== null && n.carriedBy >= 0)),
+      holding: this.notes.some((n) => this.held(n) || (n.carriedBy !== null && n.carriedBy >= 0)),
     });
   }
 

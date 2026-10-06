@@ -189,9 +189,9 @@ button {
 .invite {
   position: fixed;
   left: 50%;
-  bottom: 7vh;
+  bottom: 4vh;
   transform: translateX(-50%);
-  width: min(560px, calc(100vw - 32px));
+  width: min(540px, calc(100vw - 32px));
   padding: 26px 28px 22px;
   border: 1px solid var(--hair);
   border-radius: 18px;
@@ -300,6 +300,20 @@ button {
   50% {
     opacity: 0.45;
   }
+}
+
+.hint {
+  position: fixed;
+  left: 50%;
+  bottom: 104px;
+  transform: translateX(-50%);
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  pointer-events: none;
+  white-space: nowrap;
+  animation: pulse 1.8s ease-in-out infinite;
 }
 
 /* ------------------------------------------------------------ dock */
@@ -570,7 +584,8 @@ button {
   .hold-btn span {
     display: inline;
   }
-  .toast {
+  .toast,
+  .hint {
     bottom: 150px;
   }
   .invite-title {

@@ -247,6 +247,7 @@ export function App() {
       )}
 
       {hud.tracking === 'loading' && <div className="status mono">{hud.loadingMsg}</div>}
+      {camera && hud.tracking === 'on' && hud.hands === 0 && <div className="hint mono">Raise an open hand to the camera</div>}
 
       {!intro && (
         <footer className="dock">

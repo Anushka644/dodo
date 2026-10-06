@@ -1,6 +1,6 @@
 # Specimen
 
-**A banknote you can hold up to the light.**
+**Money you can hold.**
 
 Live: _add your deploy link here_ · Built for the Dodo Payments design engineer brief.
 
@@ -8,52 +8,47 @@ Live: _add your deploy link here_ · Built for the Dodo Payments design engineer
 
 ## What it is
 
-You move a light over a banknote. That's the only interaction.
+Turn on your camera and a banknote of *The Dodo Reserve* jumps into your hand.
+Not near your hand. Into it. It's a sheet of paper with real physics, and your
+webcam is the controller:
 
-Change the kind of light and the note answers differently, because every
-layer is a real anti-counterfeiting technique and each one only responds to
-the right light:
-
-| Tool | What it shows |
+| Your hand | The money |
 | --- | --- |
-| **1 · Lamp** | Raking light. The intaglio ink is raised, so the type and the engraved portrait catch the light as you move. The foil throws colour and the numeral shifts from green to gold. Scroll to raise or lower the lamp. |
-| **2 · Loupe** | ×5 (scroll to change). The thin lines around the border and on the thread are microtext. Read them. |
-| **3 · Ultraviolet** | The paper goes dark, as genuine paper does. Fibres, serials, a thread, a hidden dodo and a hidden line of text glow. |
-| **4 · Backlight** | The paper itself has a portrait (a watermark), the reverse side shows through, and two half-flowers printed on opposite sides line up into one. |
+| **Open hand** | The note flies to your palm and rests there. Turn your wrist and the foil throws rainbow light while the numeral shifts from green to gold. |
+| **Pinch** | Pick it up by a corner. It dangles and swings like paper. Let go mid-swing and it tumbles to the ground. |
+| **Two hands** | Hold both ends and pull it taut. Pull too hard and it slips out of one grip. |
+| **Fist** | Crumple it into a ball. Open your hand and it un-crumples, keeping its creases. |
+| **Point** | Your fingertip becomes a UV torch. The room goes dark, and the fibres, serials and a hidden lime dodo glow. |
+| **Raise it** | Hold it up to the light and the watermark appears in the paper. |
+| **Rub thumb across fingers** | The universal sign for money. You print some. It rains. *Inflation* climbs in the corner. |
 
-**Type a name** and the note is re-minted for its bearer. The serial, the
-inks and the shape of every guilloche pattern are derived from the name, and
-the patterns flow into their new shape as you type. **Sit** turns on the
-camera and engraves you into the portrait, live. **Keep** saves your note as a PNG.
+No camera? The mouse stands in for a hand: drag to hold and fling, hold
+**Space** to print, **Shift** (or right-click) for UV, **C** to crumple,
+scroll to bring it closer, and press **R** or double-click to call the note back.
 
-## Why a banknote
+## Why
 
-Dodo moves money that never touches paper, so I went the other way and made
-the most physical form money has ever taken. Banknotes are also the most
-over-designed objects most people carry: guilloche, intaglio, microprint and
-fluorescent fibres all exist so that ordinary people can check, by eye, that
-something is real. That felt close to what a payments company sells.
+Dodo moves money that never touches paper, so I made the most physical money
+I could: something you'd want to grab, fold and throw. The joke is that it's
+an extinct bird backing a currency, and the gesture everybody makes for
+"money" actually makes money. Dodo's lime green appears nowhere until you
+switch on the UV torch. Then it's everywhere, along with a hidden line:
+*"Some things only show up in the right light."*
 
-The dodo is the joke: an extinct bird backing a currency. Dodo's lime green
-appears nowhere on the note until you switch on the UV lamp. Then it's
-everywhere, along with the line _"Some things only show up in the right light."_
+## How it's built
 
-## Choices worth mentioning
-
-- **Materials, not images.** One fragment shader describes the note as paper, offset ink, raised intaglio ink, colour-shifting ink, foil, an embedded thread, fibres and a watermark, then lights it. The four tools don't swap pictures. They're four lighting models over the same materials.
-- **Guilloche solved, not drawn.** A rosette is a family of curves `r = R(θ) + A·sin(kθ + φ)`. Solving for `φ` at every pixel gives a smooth field whose level sets *are* the curves (two solutions, so two families that interlace). It stays crisp under the loupe, costs no geometry, and because the shape parameters are continuous the pattern morphs as you type without tearing.
-- **Printing plates.** Type is set in Canvas2D, one single-channel texture per print process (intaglio, colour-shift, UV ink, watermark, reverse, letterpress), mirroring how notes are actually printed. The shader decides how each plate reacts to each light.
-- **Engraving.** The portrait is a drawn dodo stored as tone + form + silhouette. Line thickness carries tone, and the lines bend around the form like a real engraver's would. The live camera runs through the same function.
-- **Paper Shaders.** I started from the suggested library and read through `ShaderMount`. I needed live canvas and video textures and a single lighting model across every layer, so I wrote one custom WebGL2 shader rather than stacking separate shaders.
-- **Small things.** The lamp has a little weight (a critically damped spring). The UV tube flickers on and hums. The note's shadow slides as the lamp moves. There's a centre fold that catches the light. The loupe has its own LED ring. On touch, the lamp and lens float above your finger so you can see what's underneath. On tall screens the note turns upright. Arrow keys steer the lamp. Reduced motion skips the ceremony. Sounds are synthesised, with no audio files. It renders only when something changes and lowers its resolution if frames run long.
+- **The note is a material, not a picture.** One shader describes the banknote as paper, offset ink, raised intaglio ink, colour-shifting ink, foil, an embedded thread, fluorescent fibres and a watermark, evaluated at the mesh's UVs. The guilloche (the fine wavy line patterns) is solved per pixel from its curve equation, so it stays crisp at any distance and morphs when you type a new name into *Issued to*. The portrait is a dodo I drew, engraved by the shader.
+- **The paper is a simulation.** Each note is a Verlet particle grid with stretch, shear and bend constraints and per-triangle air drag, which is what makes it flutter rather than drop. Pins hold it to your pinch, a soft rigid-pose attach seats it on your palm, palms are colliders that catch falling notes, and crumpling leaves a permanent wrinkle map the shader turns into creases.
+- **Your room is in it.** The webcam is drawn behind everything as a live engraving, in the same line language as the note's portrait. The foil reflects it, and a light at the top of the frame is what you hold notes up to.
+- **Hands.** MediaPipe's hand landmarker (self-hosted model and WASM, lazy-loaded only when you choose the camera) feeds a pure-TypeScript gesture tracker: pinch with hysteresis, rotation-invariant finger extension, palm orientation from world landmarks, and the "money" rub detected as thumb oscillation along the fingers. Everything passes through One Euro filters, so it's steady at rest without lagging a flick.
+- **Small things.** Sounds are synthesised (paper flutter, a note-counting machine while you print, crumpling). There's a printing-press intro. When the UV torch flickers on, the interface steps back. The webcam image never leaves the page. Rendering adapts its resolution if frames run long. Reduced motion skips the ceremony.
 
 ## What I'd explore next
 
-- **Tilt.** On phones, drive the foil and colour-shifting ink from the gyroscope, so you literally tilt the note.
-- **Spot the fake.** A second note that looks identical under the lamp but fails under UV or backlight. Same toy, now a game.
-- **Flip it over.** The reverse is already printed (you can see it when backlit). Make it a side you can turn to.
-- **Real diffraction.** Spectral rendering for the foil, and a kinegram that animates as the lamp crosses it.
-- **Print it.** Export at plate resolution, separated by process, ready for a riso.
+- **Pass it on.** Two people, two browsers: pinch a note off the edge of your screen and it lands in someone else's hand. Payments, literally.
+- **Spot the fake.** A counterfeit that looks right in your palm but fails under the UV torch.
+- **Hand occlusion.** Segment the hand so your fingers wrap *over* the note instead of only behind it.
+- **Tearing.** Pull hard enough with two hands and it rips along the paper fibres.
 
 ## Run it
 
@@ -63,21 +58,24 @@ npm run dev      # http://localhost:5173
 npm run build    # static site in dist/
 ```
 
-Deploy `dist/` anywhere static. On Vercel, import the repo and accept the
-Vite defaults. On GitHub Pages, enable *Settings → Pages → GitHub Actions*;
-the included workflow deploys on every push to `main`.
+The camera needs `localhost` or HTTPS. Deploy `dist/` anywhere static. On
+Vercel, import the repo and accept the Vite defaults. On GitHub Pages, enable
+*Settings → Pages → GitHub Actions*; the included workflow deploys from `main`.
 
-**Stack:** Vite, React, TypeScript, WebGL2 (one fragment shader), Canvas2D, WebAudio. No runtime dependencies beyond React and the fonts (IM Fell English, Bodoni Moda, Pinyon Script, IBM Plex Mono).
+**Stack:** Vite, React, TypeScript, raw WebGL2, Canvas2D, WebAudio, MediaPipe Tasks Vision.
 
 ```
 src/
-  gl/note.frag       the whole note: materials + four lighting models
-  gl/renderer.ts     minimal WebGL2 wrapper
-  note/plates.ts     Canvas2D printing plates (type, serials, UV ink, watermark, reverse)
-  note/dodo.ts       the sitter: a drawn dodo as tone / form / silhouette
-  note/seed.ts       name → serial, inks, guilloche parameters
-  note/layout.ts     one layout shared by the plates and the shader
-  engine.ts          input, springs, flicker, the press, the loop
-  sound.ts           synthesised switch, ballast hum, numbering ticks
-  App.tsx            the chrome
+  engine.ts          hands → gestures → paper physics → render; mouse fallback
+  contracts.ts       shared types and coordinate conventions
+  gl/material.glsl   the banknote as materials (front and reverse)
+  gl/sheet.frag      lighting a sheet: key light, room reflections, backlight, UV torch
+  gl/backdrop.frag   the webcam as a live engraving
+  gl/renderer3d.ts   minimal WebGL2: one backdrop pass, one mesh per note
+  physics/paper.ts   Verlet paper: constraints, aerodynamics, pins, colliders, crumple
+  sense/hands.ts     MediaPipe hand landmarker, smoothed and mirrored
+  sense/gestures.ts  pinch / point / fist / open / rub, palm orientation
+  note/*             printing plates, the drawn dodo, name → serial, inks and guilloche
+  sound.ts, paperSound.ts   synthesised sounds
+scripts/tests/       physics and gesture tests (npx tsx scripts/tests/<file>.ts)
 ```

@@ -18,19 +18,23 @@ export const GESTURE = {
   pinchFar: 0.6,
   pinchTouch: 0.15,
   /** per-finger extension score (0 curled … 1 straight): extended above On, drops below Off */
-  extOn: 0.62,
-  extOff: 0.5,
-  /** curled below On, uncurls above Off */
-  curlOn: 0.3,
-  curlOff: 0.4,
+  extOn: 0.7,
+  extOff: 0.6,
+  /** curled below On, uncurls above Off (≈ 140° of total flexion; a loose fist counts) */
+  curlOn: 0.25,
+  curlOff: 0.35,
+  /** pointing: the middle finger must be at least this bent (a relaxed half-curl is fine) */
+  pointMiddleMax: 0.5,
   /** a new pose must persist this long before it's reported (pinch release is immediate) */
   poseHoldMs: 80,
   /** palm velocity smoothing time constant */
   velTauMs: 45,
   rub: {
-    /** thumb tip ↔ the index–middle tip segment: the gate opens below On, closes above Off */
+    /** thumb tip ↔ midpoint of the index/middle tips: the gate opens below On, closes above Off */
     nearOn: 0.4,
     nearOff: 0.55,
+    /** …and the index and middle tips must be together (it's a two-finger gesture) */
+    together: 0.55,
     /** the smallest back-and-forth slide that counts as a reversal; sits above jitter */
     stroke: 0.06,
     /** a bigger swing is the hand reshaping, not a rub */
@@ -40,7 +44,9 @@ export const GESTURE = {
     /** …and this many switch the rub on */
     onCount: 3,
     /** it stays on while a reversal came this recently (and ≥ 2 are in the window) */
-    holdMs: 380,
+    holdMs: 300,
+    /** consecutive strokes must point roughly opposite (cos below this); jitter wanders at random */
+    turn: -0.5,
     /** reversals/s × stroke (palm lengths) that reads as intensity 1 */
     full: 0.9,
     /** intensity smoothing */
@@ -55,8 +61,8 @@ interface Rub {
   /** zig-zag: last turning point and the farthest point reached since */
   anchor: V3 | null;
   far: V3;
-  /** confirmed reversals: when, and the stroke that led to them */
-  marks: { t: number; amp: number }[];
+  /** confirmed reversals in the current back-and-forth chain: when, and the stroke that led there */
+  marks: { t: number; amp: number; dir: V3 }[];
   active: boolean;
   intensity: number;
 }
@@ -143,25 +149,29 @@ function track(h: TrackedHand, s: State, t: number): HandGesture {
   const side = cross(up, n);
 
   // ---- fingers
+  const e: number[] = [];
   for (let f = 0; f < FINGERS; f++) {
-    const e = extension(P, f);
-    s.ext[f] = s.ext[f] ? e > G.extOff : e > G.extOn;
-    s.curl[f] = s.curl[f] ? e < G.curlOff : e < G.curlOn;
+    e[f] = extension(P, f);
+    s.ext[f] = s.ext[f] ? e[f] > G.extOff : e[f] > G.extOn;
+    s.curl[f] = s.curl[f] ? e[f] < G.curlOff : e[f] < G.curlOn;
   }
   const open = s.ext.every(Boolean);
   const fist = s.curl.every(Boolean);
-  const point = s.ext[0] && s.curl[1] && !s.ext[2] && !s.ext[3];
 
   // ---- pinch. Needs a live index finger to engage (a fist tucks the thumb near
   // the index tip too), and closing into a fist lets go — so you can crumple what you hold.
   const pd = dist(P[4], P[8]) / size;
   s.pinch = s.pinch ? pd < G.pinchOff && !fist : pd < G.pinchOn && !s.curl[0];
+  const point = s.ext[0] && !s.ext[1] && !s.ext[2] && !s.ext[3] && e[1] < G.pointMiddleMax && !s.pinch;
 
   // ---- rub
   const R = G.rub;
   const rub = s.rub;
-  const near = segDist(P[4], P[8], P[12]) / size;
-  rub.near = (rub.near ? near < R.nearOff : near < R.nearOn) && !(s.curl[0] && s.curl[1]);
+  const near = dist(P[4], mid(P[8], P[12])) / size;
+  rub.near =
+    (rub.near ? near < R.nearOff : near < R.nearOn) &&
+    dist(P[8], P[12]) / size < R.together &&
+    !(s.curl[0] && s.curl[1]);
   if (!rub.near) {
     rub.anchor = null;
     rub.marks.length = 0;
@@ -173,7 +183,8 @@ function track(h: TrackedHand, s: State, t: number): HandGesture {
     const along = add(sub(P[8], P[7]), sub(P[12], P[11]));
     const pad = cross(along, across);
     const pl = len(pad);
-    if (pl > 1e-9) r = sub(r, scale(pad, dot(r, pad) / (pl * pl)));
+    // skip when the fingers line up with the knuckles and the pad plane is undefined
+    if (pl > 0.3 * len(along) * len(across)) r = sub(r, scale(pad, dot(r, pad) / (pl * pl)));
     zigzag(rub, [dot(r, side), dot(r, up), dot(r, n)], t);
   }
   while (rub.marks.length && t - rub.marks[0].t > R.windowMs) rub.marks.shift();
@@ -234,7 +245,9 @@ function track(h: TrackedHand, s: State, t: number): HandGesture {
  * Direction-free zig-zag: from the last turning point, track the farthest point
  * reached; once the thumb has come back `stroke` from it, that was a reversal.
  * Works for back-and-forth along or across the fingers and for small circles
- * (two reversals a lap). Jitter never travels `stroke`, so it never counts.
+ * (two reversals a lap). Jitter rarely travels `stroke`, and when it does it
+ * wanders off in random directions — so a reversal only extends the chain when
+ * its stroke runs roughly opposite to the previous one.
  */
 function zigzag(r: Rub, q: V3, t: number) {
   const R = GESTURE.rub;
@@ -245,9 +258,15 @@ function zigzag(r: Rub, q: V3, t: number) {
   }
   if (dist(q, r.anchor) >= dist(r.far, r.anchor)) r.far = q;
   else if (dist(q, r.far) >= R.stroke) {
-    const amp = dist(r.far, r.anchor);
+    const leg = sub(r.far, r.anchor);
+    const amp = len(leg);
+    const dir = scale(leg, 1 / Math.max(amp, 1e-9));
+    const prev = r.marks[r.marks.length - 1];
     if (amp > R.maxStroke) r.marks.length = 0;
-    else r.marks.push({ t, amp });
+    else {
+      if (prev && dot(prev.dir, dir) > R.turn) r.marks.length = 0;
+      r.marks.push({ t, amp, dir });
+    }
     r.anchor = r.far;
     r.far = q;
   }
@@ -272,7 +291,7 @@ export function extension(P: V3[], finger: number): number {
   const [mcp, pip, dip, tip] = [P[b], P[b + 1], P[b + 2], P[b + 3]];
   const reach = dist(P[0], tip) / Math.max(1e-9, dist(P[0], pip));
   const straight = dist(mcp, tip) / Math.max(1e-9, dist(mcp, pip) + dist(pip, dip) + dist(dip, tip));
-  return 0.5 * ramp(reach, 0.95, 1.3) + 0.5 * ramp(straight, 0.55, 0.92);
+  return 0.5 * ramp(reach, 0.9, 1.32) + 0.5 * ramp(straight, 0.7, 0.97);
 }
 
 // ------------------------------------------------------------------ vec
@@ -291,12 +310,4 @@ const ramp = (x: number, a: number, b: number) => clamp01((x - a) / (b - a));
 function norm(a: V3, fallback: V3): V3 {
   const l = len(a);
   return l > 1e-9 ? [a[0] / l, a[1] / l, a[2] / l] : fallback;
-}
-
-/** distance from p to the segment ab */
-function segDist(p: V3, a: V3, b: V3) {
-  const ab = sub(b, a);
-  const l2 = dot(ab, ab);
-  const k = l2 > 1e-12 ? clamp01(dot(sub(p, a), ab) / l2) : 0;
-  return dist(p, add(a, scale(ab, k)));
 }
