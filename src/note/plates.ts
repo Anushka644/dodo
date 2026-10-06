@@ -132,13 +132,7 @@ function drawInkStatic(ctx: Ctx) {
   font(ctx, '400', 0.021, FONTS.sc);
   spaced(ctx, 'KEEPER OF THE RESERVE', CX, 0.845, 0.004);
 
-  // portrait caption
   const P = L.portrait;
-  font(ctx, '400', 0.03, FONTS.sc);
-  spaced(ctx, 'RAPHUS CUCULLATUS', P.cx, P.cy + P.ry + 0.058, 0.006);
-  font(ctx, 'italic 400', 0.021, FONTS.fell);
-  ctx.textAlign = 'center';
-  fillT(ctx, 'Mauritius · last seen 1662', P.cx, P.cy + P.ry + 0.09);
 
   // corner numerals, sitting in their guilloche medallions
   font(ctx, '900', 0.098, FONTS.num);
@@ -202,6 +196,24 @@ function drawSignature(ctx: Ctx, name: string) {
   ctx.textAlign = 'center';
   fillT(ctx, name, 0, 0);
   ctx.restore();
+}
+
+// The caption names whoever is sitting for the portrait.
+function drawCaption(ctx: Ctx, issue: Issue, selfie: boolean) {
+  const P = L.portrait;
+  const title = selfie ? issue.name.toUpperCase() : 'RAPHUS CUCULLATUS';
+  const sub = selfie ? `sat for this portrait · ${new Date().getFullYear()}` : 'Mauritius · last seen 1662';
+  let size = 0.03;
+  font(ctx, '400', size, FONTS.sc);
+  const w = measure(ctx, title) + title.length * 0.006;
+  if (w > 0.44) {
+    size *= 0.44 / w;
+    font(ctx, '400', size, FONTS.sc);
+  }
+  spaced(ctx, title, P.cx, P.cy + P.ry + 0.058, 0.006 * (size / 0.03));
+  font(ctx, 'italic 400', 0.021, FONTS.fell);
+  ctx.textAlign = 'center';
+  fillT(ctx, sub, P.cx, P.cy + P.ry + 0.09);
 }
 
 function drawOvi(ctx: Ctx) {
@@ -363,13 +375,14 @@ export class Plates {
   }
 
   /** Re-prints only what depends on the bearer's name. Returns the plates that changed. */
-  issue(issue: Issue): PlateName[] {
+  issue(issue: Issue, selfie = false): PlateName[] {
     const ink = this.ink.ctx;
     ink.save();
     ink.setTransform(1, 0, 0, 1, 0, 0);
     ink.drawImage(this.inkStatic.c, 0, 0);
     ink.restore();
     drawSignature(ink, issue.name);
+    drawCaption(ink, issue, selfie);
 
     const red = this.red.ctx;
     red.save();

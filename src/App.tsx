@@ -3,39 +3,46 @@ import { Engine, TOOLS, type Tool } from './engine';
 import { sound } from './sound';
 import { DEFAULT_NAME } from './note/seed';
 
-const COPY: Record<Tool, { name: string; spec: string; line: string; key: string }> = {
+const COPY: Record<Tool, { name: string; short: string; spec: string; line: string; key: string }> = {
   lamp: {
     name: 'Lamp',
+    short: 'Lamp',
     spec: 'Raking light · 3200 K',
     line: 'Intaglio ink sits raised on the paper. Lower the lamp and the relief catches.',
     key: '1',
   },
   loupe: {
     name: 'Loupe',
+    short: 'Loupe',
     spec: '×5 · LED ring',
     line: 'The thin lines aren’t lines. Read them.',
     key: '2',
   },
   uv: {
     name: 'Ultraviolet',
+    short: 'UV',
     spec: 'UV-A · 365 nm',
     line: 'Real banknote paper stays dark. The things meant to glow, glow.',
     key: '3',
   },
   back: {
     name: 'Backlight',
+    short: 'Backlit',
     spec: 'Transmitted light',
     line: 'Hold it up to the window. The paper itself has a portrait.',
     key: '4',
   },
 };
 
-const HINTS: Record<Tool, string> = {
-  lamp: 'Move the lamp · scroll to raise or lower it',
-  loupe: 'Move the loupe · scroll to change magnification',
-  uv: 'Sweep the blacklight across the note',
-  back: 'Move the light behind the paper',
+const HINTS: Record<Tool, [string, string]> = {
+  // [pointer, touch]
+  lamp: ['Move the lamp · scroll to raise or lower it', 'Drag to move the lamp'],
+  loupe: ['Move the loupe · scroll to change magnification', 'Drag the loupe over the note'],
+  uv: ['Sweep the blacklight across the note', 'Drag the blacklight across the note'],
+  back: ['Move the light behind the paper', 'Drag the light behind the paper'],
 };
+
+const coarse = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -200,7 +207,7 @@ export function App() {
       </section>
 
       <div className={`hint mono ${touched ? 'is-transient' : ''}`} key={`hint-${tool}`}>
-        {HINTS[tool]}
+        {HINTS[tool][coarse ? 1 : 0]}
       </div>
 
       <footer className="dock">
@@ -278,6 +285,7 @@ function Tools({ tool, onPick }: { tool: Tool; onPick: (t: Tool) => void }) {
         >
           <ToolIcon tool={t} />
           <span className="tool-name">{COPY[t].name}</span>
+          <span className="tool-short">{COPY[t].short}</span>
           <kbd className="mono">{COPY[t].key}</kbd>
         </button>
       ))}

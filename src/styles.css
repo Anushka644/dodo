@@ -488,13 +488,26 @@ button {
   }
   .hint,
   .toast {
-    bottom: 148px;
+    bottom: 150px;
+  }
+  .hint {
+    font-size: 9.5px;
   }
 }
 
-@media (max-width: 420px) {
+.tool-short {
+  display: none;
+}
+
+@media (max-width: 520px) {
   .tool-name {
     display: none;
+  }
+  .tool-short {
+    display: inline;
+  }
+  .tool {
+    gap: 6px;
   }
 }
 

@@ -55,6 +55,13 @@ const vec3 VIOLET = vec3(0.20, 0.05, 0.55);
 
 // ---------------------------------------------------------------- utils
 
+// Mip level for a texture with `texelsPerUnit` texels per note unit, given
+// the pixel footprint. Sampling with explicit LODs keeps the note() branch
+// legal on every GPU (no implicit derivatives inside divergent flow).
+float lodFor(float px, float texelsPerUnit) {
+  return max(0.0, log2(px * texelsPerUnit));
+}
+
 float hash12(vec2 p) {
   vec3 p3 = fract(vec3(p.xyx) * 0.1031);
   p3 += dot(p3, p3.yzx + 33.33);
@@ -208,7 +215,7 @@ float borderMicro(vec2 p, float px) {
   float v = -pr.y / MICRO_H; // 0 at the line, 1 inward
   if (v < 0.0 || v > 1.0) return 0.0;
   vec2 uv = vec2(pr.x / (MICRO_H * MICRO_ASPECT), v);
-  return texture(tMicro, uv).r;
+  return textureLod(tMicro, uv, lodFor(px, 64.0 / MICRO_H)).r;
 }
 
 // ---------------------------------------------------------------- portrait
@@ -233,7 +240,7 @@ float engrave(vec2 p, float px) {
   float rr = length(q);
   if (rr > 1.0) return 0.0;
   vec2 uv = q * 0.5 + 0.5;
-  vec3 s = sitter(uv, 0.0);
+  vec3 s = sitter(uv, lodFor(px, 1284.0 / (2.0 * PORT_R.y)));
   vec3 sb = sitter(uv, 4.0);
   float bg = mix(0.6, 0.86, smoothstep(-0.9, 0.9, q.x + q.y * 0.4));
   float tone = mix(bg, s.r, s.b);
@@ -361,7 +368,7 @@ Surface note(vec2 p, float px) {
 
   // paper: a little mottled, a little fibrous
   float mott = fbm(p * 9.0);
-  float fib = fbm(vec2(p.x * 220.0, p.y * 60.0) + mott * 3.0);
+  float fib = vnoise(vec2(p.x * 220.0, p.y * 60.0) + mott * 3.0) * 0.6 + vnoise(vec2(p.x * 470.0, p.y * 130.0)) * 0.4;
   vec3 col = PAPER * (0.94 + 0.08 * mott + 0.04 * fib);
   float h = (fib - 0.5) * 0.05;
 
@@ -401,11 +408,15 @@ Surface note(vec2 p, float px) {
   col *= mix(vec3(1.0), iris, off);
 
   // --- fibres -------------------------------------------------------------
-  vec4 fb = fibres(p, px);
-  col = mix(col, col * (0.55 + 0.45 * normalize(fb.rgb + 0.4)), fb.a * 0.5);
+  vec4 fb = vec4(0.0);
+  if (uMode.z + uMode.y > 0.001) {
+    fb = fibres(p, px);
+    col = mix(col, col * (0.55 + 0.45 * normalize(fb.rgb + 0.4)), fb.a * 0.5 * uMode.y);
+  }
 
   // --- intaglio -----------------------------------------------------------
-  float plateInk = texture(tInk, p / vec2(ASPECT, 1.0)).r;
+  float plateLod = lodFor(px, 1400.0);
+  float plateInk = textureLod(tInk, p / vec2(ASPECT, 1.0), plateLod).r;
   float eng = engrave(p, px);
   float micro = borderMicro(p, px);
   float frame = lines(-sdRoundRect(p - C, C - FRAME_INSET, 0.04) / 0.5, px / 0.5, 0.0013 / px) * step(-0.002, -sdRoundRect(p - C, C - FRAME_INSET + 0.002, 0.04));
@@ -415,18 +426,18 @@ Surface note(vec2 p, float px) {
 
   // --- colour-shifting numeral -------------------------------------------
   vec2 uv = p / vec2(ASPECT, 1.0);
-  S.ovi = texture(tOvi, uv).r * inkV;
+  S.ovi = textureLod(tOvi, uv, plateLod).r * inkV;
   h += S.ovi * 0.9;
 
   // --- letterpress (serials) ---------------------------------------------
-  float red = texture(tRed, uv).r * redV;
+  float red = textureLod(tRed, uv, plateLod).r * redV;
   col = mix(col, RED_INK, red * 0.9);
   h -= red * 0.35;
 
   // --- thread -------------------------------------------------------------
   float tm = smoothstep(px, -px, abs(p.x - THREAD_X) - THREAD_W * 0.5) * smoothstep(0.02, 0.04, p.y) * smoothstep(0.98, 0.96, p.y);
   float win = smoothstep(-0.12, 0.12, sin(p.y / 0.062 * TAU));
-  float threadText = texture(tMicro, vec2(p.y / (THREAD_W * 0.8 * MICRO_ASPECT), (p.x - THREAD_X) / (THREAD_W * 0.8) + 0.5)).r;
+  float threadText = textureLod(tMicro, vec2(p.y / (THREAD_W * 0.8 * MICRO_ASPECT), (p.x - THREAD_X) / (THREAD_W * 0.8) + 0.5), lodFor(px, 64.0 / (THREAD_W * 0.8))).r;
 
   // --- foil ---------------------------------------------------------------
   float fm = foilMask(p, px) * foilV;
@@ -439,7 +450,7 @@ Surface note(vec2 p, float px) {
   S.metalTint = fm > 0.0 ? vec3(0.78, 0.79, 0.8) : vec3(0.62, 0.6, 0.55) * (1.0 - threadText * 0.7);
 
   // --- what glows ----------------------------------------------------------
-  float uvInk = texture(tUv, uv).r;
+  float uvInk = textureLod(tUv, uv, plateLod).r;
   float uvHalo = textureLod(tUv, uv, 5.0).r;
   vec3 fl = LIME * (uvInk * 0.62 + uvHalo * 0.3);
   fl += fb.rgb * 0.8;
@@ -450,21 +461,27 @@ Surface note(vec2 p, float px) {
   S.fluor = fl * uPrint;
 
   // --- what lets light through -------------------------------------------
-  float formation = 0.75 + 0.5 * fbm(p * 26.0) * fbm(p * 7.0 + 3.0);
-  float trans = 0.42 * formation;
+  S.trans = 0.0;
   vec2 wq = (p - WM_C) / WM_R;
-  vec2 wuv = vec2(wq.x * 0.62 * (WM_R.x / WM_R.y) * (PORT_R.y / PORT_R.x) + 0.47, wq.y * 0.62 + 0.52);
-  vec3 wsit = sitter(clamp(wuv, 0.0, 1.0), 3.5);
   float wmFade = smoothstep(1.0, 0.75, length(wq));
-  float wmTone = mix(0.62, wsit.r, wsit.b) * wmFade;
-  trans *= mix(1.0, mix(0.35, 2.1, wmTone), wmFade);
-  trans *= 1.0 + 1.6 * textureLod(tWater, uv, 1.5).r;
-  float back = texture(tBack, uv).r;
-  trans *= (1.0 - 0.88 * ink) * (1.0 - 0.45 * off) * (1.0 - 0.8 * red) * (1.0 - 0.9 * S.ovi);
-  trans *= 1.0 - 0.45 * back;
-  trans *= 1.0 - 0.97 * fm;
-  trans *= 1.0 - tm * (0.96 - threadText * 0.55);
-  S.trans = trans;
+  float wmTone = 0.62;
+  if (uMode.w > 0.001 || wmFade > 0.0) {
+    vec2 wuv = vec2(wq.x * 0.62 * (WM_R.x / WM_R.y) * (PORT_R.y / PORT_R.x) + 0.47, wq.y * 0.62 + 0.52);
+    vec3 wsit = sitter(clamp(wuv, 0.0, 1.0), 3.5);
+    wmTone = mix(0.62, wsit.r, wsit.b);
+  }
+  if (uMode.w > 0.001) {
+    float formation = 0.75 + 0.5 * fbm(p * 26.0) * vnoise(p * 7.0 + 3.0);
+    float trans = 0.42 * formation;
+    trans *= mix(1.0, mix(0.35, 2.1, wmTone), wmFade);
+    trans *= 1.0 + 1.6 * textureLod(tWater, uv, plateLod + 1.5).r;
+    float back = textureLod(tBack, uv, plateLod).r;
+    trans *= (1.0 - 0.88 * ink) * (1.0 - 0.45 * off) * (1.0 - 0.8 * red) * (1.0 - 0.9 * S.ovi);
+    trans *= 1.0 - 0.45 * back;
+    trans *= 1.0 - 0.97 * fm;
+    trans *= 1.0 - tm * (0.96 - threadText * 0.55);
+    S.trans = trans;
+  }
   S.albedo *= 1.0 + (wmTone - 0.62) * 0.06 * wmFade;
   return S;
 }
@@ -523,12 +540,12 @@ void main() {
 
   // a centre fold and a little wear make it a note someone has carried
   float fold = clamp((p.x - ASPECT * 0.5) / 0.012, -1.0, 1.0);
-  vec2 wear = vec2(fbm(p * 3.1) - 0.5, fbm(p * 3.1 + 9.0) - 0.5) * 0.09;
+  vec2 wear = vec2(vnoise(p * 3.1) - 0.5, vnoise(p * 3.1 + 9.0) - 0.5) * 0.08;
   vec3 N = normalize(vec3(-gh * 0.00042 + vec2(-0.075 * fold, 0.0) + wear, 1.0));
   N = normalize(mix(vec3(0, 0, 1), N, onNote));
 
   // ------------------------------------------------ desk
-  float deskGrain = fbm(p * 40.0) * 0.5 + 0.5 * hash12(floor(frag));
+  float deskGrain = vnoise(p * 40.0) * 0.5 + 0.5 * hash12(floor(frag));
   vec3 desk = vec3(0.034, 0.031, 0.029) * (0.85 + 0.3 * deskGrain);
   // the note floats a hair above the desk; its shadow slides with the lamp
   float lift = 0.028;
@@ -573,7 +590,7 @@ void main() {
     // seen from straight above, a flat foil mirrors the lamp away from you:
     // it reads dark and silvery until its gratings throw colour back
     float glitter = step(0.985, hash12(floor(p * 2400.0))) * pow(nh, 4.0);
-    vec3 metal = S.metalTint * (ROOM * 3.0 + LAMP * atten * (0.1 + 0.12 * diff + 1.2 * pow(nh, 80.0) + glitter * S.foil * 2.0))
+    vec3 metal = S.metalTint * (ROOM * 3.0 + LAMP * atten * (0.16 + 0.22 * diff + 0.35 * pow(nh, 6.0) + 1.2 * pow(nh, 80.0) + glitter * S.foil * 2.0))
                + rainbow * LAMP * atten * fbright * 0.9 * S.foil;
     lit = mix(lit, metal, S.metal);
 

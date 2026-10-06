@@ -42,7 +42,7 @@ export class Engine {
 
   // pointer & lamp
   private pointer = { x: 0, y: 0, active: false, touch: false };
-  private light = { x: ASPECT * 0.62, y: 0.42, z: 0.42 };
+  private light = { x: ASPECT * 0.5, y: 0.5, z: 1.0 };
   private lightVel = { x: { v: 0 }, y: { v: 0 } };
   private lampHeight = 0.42;
   private loupeMag = 5;
@@ -121,7 +121,7 @@ export class Engine {
     const h = window.innerHeight;
     const rotated = h > w * 1.15;
     const top = rotated ? 64 : 76;
-    const bottom = rotated ? 150 : 108;
+    const bottom = rotated ? 176 : 108;
     const side = rotated ? 16 : 40;
     const availW = w - side * 2;
     const availH = h - top - bottom;
@@ -222,10 +222,12 @@ export class Engine {
     sound.tick();
     // the guilloche morphs every frame; the type is re-set once you pause
     window.clearTimeout(this.reprintTimer);
-    this.reprintTimer = window.setTimeout(() => {
-      for (const p of this.plates.issue(this.issueTarget)) this.renderer.setPlate(p, this.plates.canvas(p));
-      this.dirty = true;
-    }, 90);
+    this.reprintTimer = window.setTimeout(() => this.reprint(), 90);
+    this.dirty = true;
+  }
+
+  private reprint() {
+    for (const p of this.plates.issue(this.issueTarget, this.cameraOn)) this.renderer.setPlate(p, this.plates.canvas(p));
     this.dirty = true;
   }
 
@@ -246,7 +248,7 @@ export class Engine {
       await v.play();
       this.video = v;
       this.renderer.setPortrait(v);
-      this.dirty = true;
+      this.reprint();
       return true;
     } catch {
       this.stopCamera();
@@ -260,6 +262,7 @@ export class Engine {
     if (this.video) {
       this.video = null;
       this.renderer.setPortrait(this.dodo);
+      this.reprint();
     }
     this.dirty = true;
   }
@@ -331,7 +334,10 @@ export class Engine {
 
     // where the lamp wants to be
     let target: { x: number; y: number };
-    if (this.idle) {
+    if (this.print < 1) {
+      // while the press runs, a high work light over the middle
+      target = { x: ASPECT * 0.5, y: 0.5 };
+    } else if (this.idle) {
       // until you take it, the lamp wanders over the note by itself
       this.idleT += dt;
       const k = this.idleT * 0.32;
@@ -349,7 +355,7 @@ export class Engine {
     if (Math.abs(nx - this.light.x) + Math.abs(ny - this.light.y) > 1e-5) animating = true;
     this.light.x = nx;
     this.light.y = ny;
-    const zTarget = this.tool === 'loupe' ? 0.5 : this.lampHeight;
+    const zTarget = this.print < 1 ? 1.0 : this.tool === 'loupe' ? 0.5 : this.lampHeight;
     this.light.z += (zTarget - this.light.z) * Math.min(1, dt * 10);
     if (Math.abs(zTarget - this.light.z) > 1e-4) animating = true;
 
