@@ -447,25 +447,19 @@ function returned(ctx: Ctx, date: string) {
 }
 
 function customs(ctx: Ctx, date: string) {
+  // the house seal: the sitter's bust in a roundel, the date round the foot
   ring(ctx, 113, 7);
   ring(ctx, 101, 2.5);
   ring(ctx, 66, 2.5);
-  arcText(ctx, 'THE DODO RESERVE', 78, -Math.PI / 2, true, { size: 17, family: FONTS.sc, weight: '400', track: 1.8 });
-  arcText(ctx, 'CUSTOMS', 88, Math.PI / 2, false, { size: 19, family: FONTS.sc, weight: '400', track: 6 });
-  star(ctx, -86, 4, 6);
-  star(ctx, 86, 4, 6);
+  arcText(ctx, 'THE DODO RESERVE', 78, -Math.PI / 2, true, { size: 18, family: FONTS.sc, weight: '400', track: 2 });
+  arcText(ctx, `CUSTOMS · ${date}`, 87, Math.PI / 2, false, { size: 13, track: 1.4 });
+  star(ctx, -86, -6, 5.5);
+  star(ctx, 86, -6, 5.5);
   ctx.save();
   ctx.beginPath();
-  ctx.arc(0, 0, 62, 0, Math.PI * 2);
+  ctx.arc(0, 0, 60, 0, Math.PI * 2);
   ctx.clip();
-  fillDodo(ctx, 8, -2, 108, true);
-  // the date, knocked out of a solid band, a hair clear of the bird
-  ctx.fillStyle = '#000';
-  ctx.fillRect(-70, 25, 140, 34);
-  ctx.fillStyle = '#fff';
-  ctx.fillRect(-70, 29, 140, 22);
-  ctx.fillStyle = '#000';
-  text(ctx, date, 0, 45, { size: 13, track: 1, maxW: 104 });
+  fillDodo(ctx, 2, 18, 132, true);
   ctx.restore();
 }
 
@@ -557,9 +551,9 @@ function rubber(src: HTMLCanvasElement): HTMLCanvasElement {
           let dens = press + (1 - press) * side;
           // where the rubber held more or less ink
           dens *= 0.88 + 0.26 * vnoise(X / 13, Y / 13, seed + 7);
-          // a patch or two where it barely touched
-          const miss = vnoise(X / 24, Y / 24, seed + 13);
-          dens *= 1 - 0.5 * smooth(0.68, 0.82, miss) * (1 - side * 0.5);
+          // a patch or two where it barely touched (they nibble, they don't erase)
+          const miss = vnoise(X / 17, Y / 17, seed + 17);
+          dens *= 1 - 0.4 * smooth(0.7, 0.84, miss) * (1 - side * 0.5);
           // Thin ink doesn't go lighter, it breaks up: the paper's tooth
           // decides which specks catch it.
           const tooth = vnoise(X / 1.5, Y / 1.5, seed + 3) * 0.7 + hash(X, Y, seed + 5) * 0.3;

@@ -31,6 +31,12 @@ uniform sampler2D tRed;
 uniform sampler2D tPortrait;
 uniform sampler2D tMicro;
 
+// Passport stamps (front face only). One rubber-stamp mask atlas, 4 × 4
+// cells; each slot places one impression on the note.
+uniform sampler2D tStamps;
+uniform vec4 uStamps[6];    // xy: centre, note space · z: rotation (rad) · w: atlas cell, < 0 = empty
+uniform vec3 uStampInk[6];  // linear RGB
+
 #define PI 3.14159265
 #define TAU 6.28318531
 
@@ -331,6 +337,44 @@ vec3 foilDiffraction(vec2 p, vec3 Ld, out float bright) {
   return rainbow;
 }
 
+// ---------------------------------------------------------------- stamps
+
+#define STAMP_D 0.34          // impression diameter, note units (one atlas cell)
+#define STAMP_CELLS 4.0
+
+// Rubber-stamp ink overprinted on whatever is already on the paper. The ink
+// is transparent, so it multiplies: on bare paper it shows its own colour,
+// over intaglio it just goes darker. It pools a little at the edge of each
+// stroke and sinks into the paper's tooth. Returns the tint to multiply the
+// albedo by (rgb) and the total ink coverage (a).
+vec4 stampLayer(vec2 p, float px, float tooth) {
+  vec3 tint = vec3(1.0);
+  float cover = 0.0;
+  float lod = lodFor(px, 256.0 / STAMP_D);
+  for (int i = 0; i < 6; i++) {
+    vec4 s = uStamps[i];
+    if (s.w < 0.0) continue;
+    vec2 d = p - s.xy;
+    // outside the cell's circumscribed circle: nothing to sample
+    if (dot(d, d) > STAMP_D * STAMP_D * 0.5) continue;
+    float c = cos(s.z), sn = sin(s.z);
+    vec2 q = vec2(c * d.x + sn * d.y, c * d.y - sn * d.x) / STAMP_D + 0.5;
+    if (q.x < 0.0 || q.y < 0.0 || q.x > 1.0 || q.y > 1.0) continue;
+    vec2 cell = vec2(mod(s.w, STAMP_CELLS), floor(s.w / STAMP_CELLS + 0.001));
+    vec2 uv = (cell + clamp(q, 0.004, 0.996)) / STAMP_CELLS;
+    float m = textureLod(tStamps, uv, lod).r;
+    if (m < 0.004) continue;
+    float spread = textureLod(tStamps, uv, lod + 1.6).r;
+    float pool = clamp(m - spread, 0.0, 1.0);
+    float a = m * (0.74 + 0.22 * tooth) + pool * 0.3;
+    a = clamp(a, 0.0, 0.93);
+    vec3 T = clamp(uStampInk[i] / PAPER, 0.0, 1.0);
+    tint *= mix(vec3(1.0), T, a);
+    cover = 1.0 - (1.0 - cover) * (1.0 - a);
+  }
+  return vec4(tint, cover);
+}
+
 // ---------------------------------------------------------------- the note
 
 struct Surface {
@@ -432,10 +476,15 @@ Surface note(vec2 p, float px) {
   // --- foil ---------------------------------------------------------------
   float fm = foilMask(p, px) * foilV;
 
+  // --- passport stamps: last thing to touch the note, on top of everything
+  vec4 stp = stampLayer(p, px, fib);
+  col = mix(col, vec3(0.6, 0.6, 0.6), fm * stp.a);   // on foil the ink sits on metal, not on print
+  col *= stp.rgb;
+
   S.albedo = col;
   S.height = h;
   S.gloss = 0.08 + ink * 0.35 + S.ovi * 0.6;
-  S.metal = max(fm, tm * win * inkV);
+  S.metal = max(fm, tm * win * inkV) * (1.0 - stp.a);
   S.foil = fm;
   S.metalTint = fm > 0.0 ? vec3(0.78, 0.79, 0.8) : vec3(0.62, 0.6, 0.55) * (1.0 - threadText * 0.7);
 
@@ -448,6 +497,7 @@ Surface note(vec2 p, float px) {
   fl += vec3(0.05, 0.4, 1.0) * rosIn * 0.18 * offV;                  // UV-reactive offset
   fl += vec3(1.0, 0.1, 0.55) * tm * (0.6 + 0.4 * win);               // thread glows full length
   fl *= 1.0 - fm;
+  fl *= 1.0 - 0.9 * stp.a;                                           // stamp ink stays dark under UV
   S.fluor = fl * uPrint;
 
   // --- what lets light through -------------------------------------------
@@ -470,8 +520,10 @@ Surface note(vec2 p, float px) {
     trans *= 1.0 - 0.45 * back;
     trans *= 1.0 - 0.97 * fm;
     trans *= 1.0 - tm * (0.96 - threadText * 0.55);
+    trans *= 1.0 - 0.5 * stp.a;
     S.trans = trans;
   }
+  S.ovi *= 1.0 - 0.85 * stp.a;
   S.albedo *= 1.0 + (wmTone - 0.62) * 0.06 * wmFade;
   return S;
 }

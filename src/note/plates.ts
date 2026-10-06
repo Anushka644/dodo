@@ -284,8 +284,8 @@ function drawInkStatic(ctx: Ctx, country: Country) {
   const maxName = 0.5;
   if (natural > maxName) size *= maxName / natural;
   font(ctx, '400', size, FONTS.sc);
-  const nw = spaced(ctx, name, CX, 0.166, track(size));
-  const ry = 0.166 - size * 0.34;
+  const nw = spaced(ctx, name, CX, 0.163, track(size));
+  const ry = 0.163 - size * 0.34;
   for (const s of [-1, 1]) {
     const x0 = CX + s * (nw / 2 + 0.014);
     diamond(ctx, x0 + s * 0.004, ry, 0.0055);
