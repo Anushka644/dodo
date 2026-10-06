@@ -273,23 +273,31 @@ function line(ctx: Ctx, pieces: Piece[], cx: number, y: number, maxW: number) {
 function drawInkStatic(ctx: Ctx, country: Country) {
   ctx.textBaseline = 'alphabetic';
 
+  // The issuing country rides above the bank, the way UNITED STATES OF
+  // AMERICA sits over a dollar: small capitals, wide tracking, hemmed by
+  // the same rule-and-diamond as the denomination.
+  const name = country.formal.toUpperCase();
+  let size = 0.0215;
+  const track = (sz: number) => sz * 0.3;
+  font(ctx, '400', size, FONTS.sc);
+  const natural = [...name].reduce((a, ch) => a + measure(ctx, ch), 0) + track(size) * ([...name].length - 1);
+  const maxName = 0.5;
+  if (natural > maxName) size *= maxName / natural;
+  font(ctx, '400', size, FONTS.sc);
+  const nw = spaced(ctx, name, CX, 0.166, track(size));
+  const ry = 0.166 - size * 0.34;
+  for (const s of [-1, 1]) {
+    const x0 = CX + s * (nw / 2 + 0.014);
+    diamond(ctx, x0 + s * 0.004, ry, 0.0055);
+    rule(ctx, x0 + s * 0.014, x0 + s * 0.06, ry, 0.0012);
+  }
+
   // title
   font(ctx, '400', 0.064, FONTS.sc);
   spaced(ctx, 'THE DODO RESERVE', CX, 0.222, 0.008);
-  // the promise, made in the name of whichever country this window is
-  line(
-    ctx,
-    [
-      { text: country.formal.toUpperCase(), spec: '400', size: 0.0235, family: FONTS.sc, tracking: 0.0035 },
-      { gap: 0.014 },
-      { dot: 0.0075 },
-      { gap: 0.014 },
-      { text: 'promises to pay the bearer on demand', spec: 'italic 400', size: 0.029, family: FONTS.fell },
-    ],
-    CX,
-    0.268,
-    0.6,
-  );
+  font(ctx, 'italic 400', 0.03, FONTS.fell);
+  ctx.textAlign = 'center';
+  fillT(ctx, 'promises to pay the bearer on demand', CX, 0.268);
 
   // denomination, set into the rosette
   font(ctx, '400', 0.062, FONTS.sc);
@@ -322,7 +330,7 @@ function drawInkStatic(ctx: Ctx, country: Country) {
   const P = L.portrait;
 
   // corner signs, sitting in their guilloche medallions
-  const sign = fitSymbol(country.symbol, 0.098, 0.1, 0.08, 0.058);
+  const sign = fitSymbol(country.symbol, 0.098, 0.088, 0.08, 0.056);
   for (const m of L.medallions) printGlyph(ctx, sign, m.cx, m.cy, 0.5, 0.5, 0.0035);
 
   // see-through register, front half: three of six petals
@@ -380,9 +388,10 @@ function drawCaption(ctx: Ctx, issue: Issue, selfie: boolean) {
   const sub = selfie ? `sat for this portrait · ${new Date().getFullYear()}` : 'Mauritius · last seen 1662';
   let size = 0.03;
   font(ctx, '400', size, FONTS.sc);
+  // kept clear of the bottom-right medallion, whatever sign it carries
   const w = measure(ctx, title) + title.length * 0.006;
-  if (w > 0.44) {
-    size *= 0.44 / w;
+  if (w > 0.41) {
+    size *= 0.41 / w;
     font(ctx, '400', size, FONTS.sc);
   }
   spaced(ctx, title, P.cx, P.cy + P.ry + 0.058, 0.006 * (size / 0.03));
@@ -394,7 +403,7 @@ function drawCaption(ctx: Ctx, issue: Issue, selfie: boolean) {
 function drawOvi(ctx: Ctx, country: Country) {
   // the big colour-shifting sign: left-aligned to the frame, sitting on the
   // OVI baseline; anything that hangs below (Rp) is lifted clear of the border
-  const g = fitSymbol(country.symbol, L.ovi.size, 0.19, 0.2);
+  const g = fitSymbol(country.symbol, L.ovi.size, 0.17, 0.2);
   const { below } = glyphSize(g);
   const lift = Math.max(0, L.ovi.y + below - 0.876);
   printGlyph(ctx, g, L.ovi.x - 0.03, L.ovi.y - lift, 0, 'base');
@@ -477,7 +486,7 @@ function drawBack(ctx: Ctx, country: Country) {
   ctx.strokeRect(0.09, 0.09, ASPECT - 0.18, 0.82);
   ctx.lineWidth = 0.0015;
   ctx.strokeRect(0.11, 0.11, ASPECT - 0.22, 0.78);
-  const g = fitSymbol(country.symbol, 0.62, 0.62, 0.56);
+  const g = fitSymbol(country.symbol, 0.62, 0.56, 0.54);
   printGlyph(ctx, g, 0.5, 0.5, 0.5, 0.5);
   font(ctx, '400', 0.08, FONTS.sc);
   spaced(ctx, 'IN DODO WE TRUST', 1.42, 0.5, 0.01);

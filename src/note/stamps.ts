@@ -247,9 +247,9 @@ const designs: Record<string, Design> = {
     roundRect(ctx, 194, 136, 7, 2.5);
     text(ctx, 'UNITED STATES', 0, -44, { size: 17, track: 3.2, maxW: 170 });
     hline(ctx, -86, 86, -36, 2.5);
-    text(ctx, 'US', -44, 22, BIG(62));
-    text(ctx, 'ADMITTED', 34, 2, { size: 17, weight: '500', track: 1.2 });
-    arrow(ctx, 34, 20, 66, 6);
+    text(ctx, 'US', -46, 23, BIG(62));
+    text(ctx, 'ADMITTED', 44, -2, { size: 15, track: 1, maxW: 80 });
+    arrow(ctx, 44, 17, 64, 5.5);
     hline(ctx, -86, 86, 36, 2.5);
     text(ctx, date, 0, 58, { size: 17, track: 2, maxW: 170 });
   },
@@ -259,14 +259,14 @@ const designs: Record<string, Design> = {
     ring(ctx, 112, 7);
     ring(ctx, 100, 2.5);
     ring(ctx, 70, 2.5);
-    arcText(ctx, 'BUREAU OF IMMIGRATION', 80, -Math.PI / 2, true, { size: 18, track: 2.4 });
+    arcText(ctx, 'IMMIGRATION · INDIA', 81, -Math.PI / 2, true, { size: 17, track: 2 });
     arcText(ctx, 'ARRIVAL', 92, Math.PI / 2, false, { size: 18, track: 5 });
     star(ctx, -94, 6, 6);
     star(ctx, 94, 6, 6);
-    text(ctx, 'IN', 0, 4, BIG(54));
-    hline(ctx, -58, 58, 16, 2.5);
-    text(ctx, date, 0, 36, { size: 14, track: 1, maxW: 110 });
-    arrow(ctx, 0, -42, 40, 4.5);
+    text(ctx, 'IN', 0, 10, BIG(54));
+    hline(ctx, -58, 58, 21, 2.5);
+    text(ctx, date, 0, 40, { size: 14, track: 1, maxW: 106 });
+    arrow(ctx, 0, -46, 40, 4.5);
   },
 
   // Landing permission: a ticket with notched corners.
@@ -274,11 +274,9 @@ const designs: Record<string, Design> = {
     ticket(ctx, 200, 200, 22, 6.5);
     ticket(ctx, 182, 182, 18, 2);
     text(ctx, 'JAPAN', 0, -58, { size: 22, track: 9 });
-    text(ctx, 'JP', 0, 18, BIG(70));
-    ctx.beginPath();
-    ctx.arc(64, -16, 9, 0, Math.PI * 2);
-    ctx.fill();
+    text(ctx, 'JP', 0, 20, BIG(70));
     text(ctx, 'LANDING PERMIT', 0, 46, { size: 13, track: 1.6, maxW: 150 });
+    hline(ctx, -70, 70, 54, 2);
     text(ctx, date, 0, 72, { size: 17, track: 1.5, maxW: 150 });
   },
 
@@ -289,7 +287,7 @@ const designs: Record<string, Design> = {
     ring(ctx, 114, 7);
     ring(ctx, 103, 2.5);
     ctx.restore();
-    text(ctx, 'UNITED KINGDOM', 0, -46, { size: 15, track: 2.2, maxW: 150 });
+    text(ctx, 'UNITED KINGDOM', 0, -42, { size: 14, track: 2, maxW: 124 });
     text(ctx, 'GB', 0, 18, { size: 56, family: FONTS.num, weight: '900', track: 2 });
     text(ctx, 'LEAVE TO ENTER', 0, 40, { size: 12, track: 1.6 });
     text(ctx, date, 0, 61, { size: 13, track: 1.2, maxW: 120 });
@@ -299,49 +297,49 @@ const designs: Record<string, Design> = {
 
   // Schengen: a rounded box, a ring of stars round the country, arrow in.
   FR(ctx, date) {
-    roundRect(ctx, 220, 160, 18, 6.5);
-    const cx = -52;
-    const cy = -18;
+    roundRect(ctx, 220, 166, 18, 6.5);
+    const cx = -50;
+    const cy = -20;
     for (let i = 0; i < 12; i++) {
       const a = (i / 12) * Math.PI * 2;
-      star(ctx, cx + Math.cos(a) * 36, cy + Math.sin(a) * 36, 5.6);
+      star(ctx, cx + Math.cos(a) * 40, cy + Math.sin(a) * 40, 6);
     }
-    text(ctx, 'F', cx, cy + 16, BIG(44));
-    arrow(ctx, 44, -44, 56, 6);
-    plane(ctx, 44, -14, 30);
-    text(ctx, date, 0, 48, { size: 20, track: 1.5, maxW: 190 });
-    text(ctx, 'ROISSY CDG · 042', 0, 68, { size: 12, track: 1.2, maxW: 170 });
-    text(ctx, 'FR', 52, 30, { size: 28, family: SANS, weight: '700', track: 3 });
+    text(ctx, 'FR', cx, cy + 12, BIG(32));
+    arrow(ctx, 48, -42, 60, 6);
+    plane(ctx, 48, -10, 34);
+    hline(ctx, -96, 96, 30, 2.5);
+    text(ctx, date, 0, 54, { size: 19, track: 1.5, maxW: 186 });
+    text(ctx, 'ROISSY-CDG  042', 0, 71, { size: 11, track: 1.4, maxW: 170 });
   },
 
   // Polícia Federal: a hexagon.
   BR(ctx, date) {
     polygon(ctx, 6, 116, 0, 7, 1);
     polygon(ctx, 6, 104, 0, 2.5, 1);
-    text(ctx, 'BRASIL', 0, -50, { size: 20, track: 7 });
+    text(ctx, 'BRASIL', 0, -46, { size: 20, track: 7 });
     text(ctx, 'BR', 0, 16, BIG(64));
     text(ctx, 'ENTRADA', -12, 40, { size: 14, track: 2 });
     arrow(ctx, 50, 35, 26, 4);
     text(ctx, date, 0, 64, { size: 15, track: 1.2, maxW: 140 });
-    text(ctx, 'POLÍCIA FEDERAL', 0, -76, { size: 11, track: 1.4, maxW: 120 });
+    text(ctx, 'POLÍCIA FEDERAL', 0, -72, { size: 10, track: 1.2, maxW: 92 });
   },
 
   // Nigeria Immigration Service: an octagon, the eagle reduced to a star.
   NG(ctx, date) {
     polygon(ctx, 8, 116, Math.PI / 8, 7);
     polygon(ctx, 8, 103, Math.PI / 8, 2.5);
-    text(ctx, 'NIGERIA', 0, -56, { size: 21, track: 6 });
-    text(ctx, 'IMMIGRATION', 0, -36, { size: 13, track: 2.6 });
-    text(ctx, 'NG', 0, 28, BIG(62));
-    arrow(ctx, -62, 6, 30, 4.5);
-    arrow(ctx, 62, 6, 30, 4.5, -1);
-    text(ctx, `LOS ${date}`, 0, 62, { size: 14, track: 1, maxW: 150 });
+    text(ctx, 'NIGERIA', 0, -54, { size: 21, track: 6 });
+    text(ctx, 'IMMIGRATION', 0, -35, { size: 13, track: 2.6 });
+    text(ctx, 'NG', 0, 26, BIG(60));
+    arrow(ctx, -66, 4, 28, 4.5);
+    arrow(ctx, 66, 4, 28, 4.5, -1);
+    text(ctx, date, 0, 54, { size: 15, track: 1, maxW: 124 });
+    text(ctx, 'LAGOS', 0, 72, { size: 11, track: 3 });
   },
 
   // Korea Immigration Service: a pill with the code in a roundel.
   KR(ctx, date) {
     roundRect(ctx, 226, 128, 64, 7);
-    ring(ctx, 40, 3);
     ctx.save();
     ctx.translate(-64, 0);
     ring(ctx, 42, 3);
@@ -367,7 +365,7 @@ const designs: Record<string, Design> = {
     ctx.closePath();
     ctx.stroke();
     ring(ctx, 92, 2.5);
-    arcText(ctx, 'MIGRACIÓN · MÉXICO', 72, -Math.PI / 2, true, { size: 17, track: 2.4 });
+    arcText(ctx, 'MIGRACIÓN · MÉXICO', 73, -Math.PI / 2, true, { size: 15, track: 2 });
     arcText(ctx, 'ENTRADA', 82, Math.PI / 2, false, { size: 15, track: 4 });
     text(ctx, 'MX', 0, 14, BIG(54));
     hline(ctx, -52, 52, 26, 2.5);
@@ -379,7 +377,7 @@ const designs: Record<string, Design> = {
     ring(ctx, 113, 4);
     ring(ctx, 104, 7);
     ring(ctx, 66, 2.5);
-    arcText(ctx, 'TÜRKİYE CUMHURİYETİ', 82, -Math.PI / 2, true, { size: 16, track: 2 });
+    arcText(ctx, 'TÜRKİYE', 80, -Math.PI / 2, true, { size: 21, track: 8 });
     arcText(ctx, 'GİRİŞ', 88, Math.PI / 2, false, { size: 17, track: 7 });
     ctx.save();
     ctx.translate(-82, 26);
@@ -401,8 +399,8 @@ const designs: Record<string, Design> = {
     text(ctx, 'IMIGRASI', 0, -48, { size: 21, track: 5.5 });
     text(ctx, 'INDONESIA', 0, -28, { size: 13, track: 4 });
     text(ctx, 'ID', -40, 30, BIG(62));
-    text(ctx, 'KEDATANGAN', 42, 8, { size: 11, track: 0.6, maxW: 76 });
-    arrow(ctx, 42, 24, 56, 5);
+    text(ctx, 'KEDATANGAN', 44, 6, { size: 12.5, track: 0.4, maxW: 80 });
+    arrow(ctx, 44, 22, 60, 5);
     text(ctx, date, 0, 62, { size: 16, track: 1.2, maxW: 160 });
   },
 
@@ -415,11 +413,11 @@ const designs: Record<string, Design> = {
     ctx.restore();
     arcText(ctx, 'AUSTRALIA', 72, -Math.PI / 2, true, { size: 22, track: 6 });
     arcText(ctx, 'ARRIVED', 82, Math.PI / 2, false, { size: 16, track: 4 });
-    text(ctx, 'AU', 0, 18, BIG(58));
-    hline(ctx, -50, 50, 30, 2.5);
-    text(ctx, date, 0, 48, { size: 13, track: 0.8, maxW: 96 });
-    star(ctx, -42, -18, 6, 7);
-    plane(ctx, 44, -22, 22, -0.5);
+    text(ctx, 'AU', 0, 16, BIG(58));
+    star(ctx, 0, -38, 8, 7);
+    hline(ctx, -52, 52, 27, 2.5);
+    text(ctx, date, 0, 45, { size: 13, track: 0.8, maxW: 96 });
+    plane(ctx, 0, 59, 18, -Math.PI / 2);
   },
 };
 
@@ -428,7 +426,7 @@ function returned(ctx: Ctx, date: string) {
   roundRect(ctx, 228, 140, 6, 7);
   roundRect(ctx, 212, 124, 3, 2.5);
   ctx.save();
-  ctx.translate(-72, -6);
+  ctx.translate(-72, -10);
   ctx.lineWidth = 9;
   ctx.lineCap = 'butt';
   ctx.beginPath();
@@ -441,18 +439,18 @@ function returned(ctx: Ctx, date: string) {
   ctx.closePath();
   ctx.fill();
   ctx.restore();
-  text(ctx, 'RETURNED', 34, -22, { size: 26, family: SANS, weight: '700', track: 1.5, maxW: 132 });
-  text(ctx, 'TO SENDER', 34, 6, { size: 26, family: SANS, weight: '700', track: 1.5, maxW: 132 });
-  hline(ctx, -100, 100, 22, 2.5);
-  text(ctx, 'NO SUCH COUNTRY', 0, 44, { size: 14, track: 2.2, maxW: 190 });
-  text(ctx, date, 0, 61, { size: 11, track: 1.6 });
+  text(ctx, 'RETURNED', 34, -24, { size: 26, family: SANS, weight: '700', track: 1.5, maxW: 132 });
+  text(ctx, 'TO SENDER', 34, 4, { size: 26, family: SANS, weight: '700', track: 1.5, maxW: 132 });
+  hline(ctx, -100, 100, 18, 2.5);
+  text(ctx, 'NO SUCH COUNTRY', 0, 37, { size: 14, track: 2.2, maxW: 190 });
+  text(ctx, date, 0, 54, { size: 11, track: 1.6 });
 }
 
 function customs(ctx: Ctx, date: string) {
   ring(ctx, 113, 7);
   ring(ctx, 101, 2.5);
   ring(ctx, 66, 2.5);
-  arcText(ctx, 'THE DODO RESERVE', 78, -Math.PI / 2, true, { size: 19, family: FONTS.sc, weight: '400', track: 2.4 });
+  arcText(ctx, 'THE DODO RESERVE', 78, -Math.PI / 2, true, { size: 17, family: FONTS.sc, weight: '400', track: 1.8 });
   arcText(ctx, 'CUSTOMS', 88, Math.PI / 2, false, { size: 19, family: FONTS.sc, weight: '400', track: 6 });
   star(ctx, -86, 4, 6);
   star(ctx, 86, 4, 6);
@@ -460,11 +458,14 @@ function customs(ctx: Ctx, date: string) {
   ctx.beginPath();
   ctx.arc(0, 0, 62, 0, Math.PI * 2);
   ctx.clip();
-  fillDodo(ctx, 8, 2, 112, true);
-  // the date, knocked out of a solid band across the bird
-  ctx.fillRect(-70, 30, 140, 22);
+  fillDodo(ctx, 8, -2, 108, true);
+  // the date, knocked out of a solid band, a hair clear of the bird
   ctx.fillStyle = '#000';
-  text(ctx, date, 0, 46, { size: 13, track: 1, maxW: 104 });
+  ctx.fillRect(-70, 25, 140, 34);
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(-70, 29, 140, 22);
+  ctx.fillStyle = '#000';
+  text(ctx, date, 0, 45, { size: 13, track: 1, maxW: 104 });
   ctx.restore();
 }
 
@@ -531,7 +532,7 @@ function rubber(src: HTMLCanvasElement): HTMLCanvasElement {
       const ang = hash(seed, 7, 3) * Math.PI * 2;
       const dx = Math.cos(ang);
       const dy = Math.sin(ang);
-      const press = 0.55 + hash(seed, 9, 4) * 0.25;
+      const press = 0.58 + hash(seed, 9, 4) * 0.22;
       for (let y = 0; y < CELL; y++) {
         for (let x = 0; x < CELL; x++) {
           const X = cx * CELL + x;
@@ -553,15 +554,20 @@ function rubber(src: HTMLCanvasElement): HTMLCanvasElement {
           }
           // pressure: heavy on one side, starved on the other
           const side = smooth(-1.1, 0.9, qx * dx + qy * dy);
-          let ink = press + (1 - press) * side;
-          // mottle where the rubber held more or less ink
-          ink *= 0.78 + 0.22 * vnoise(X / 9, Y / 9, seed + 7);
+          let dens = press + (1 - press) * side;
+          // where the rubber held more or less ink
+          dens *= 0.88 + 0.26 * vnoise(X / 13, Y / 13, seed + 7);
           // a patch or two where it barely touched
-          const miss = vnoise(X / 26, Y / 26, seed + 13);
-          ink *= 1 - 0.75 * smooth(0.68, 0.8, miss) * (1 - side * 0.6);
+          const miss = vnoise(X / 24, Y / 24, seed + 13);
+          dens *= 1 - 0.5 * smooth(0.68, 0.82, miss) * (1 - side * 0.5);
+          // Thin ink doesn't go lighter, it breaks up: the paper's tooth
+          // decides which specks catch it.
+          const tooth = vnoise(X / 1.5, Y / 1.5, seed + 3) * 0.7 + hash(X, Y, seed + 5) * 0.3;
+          const cover = smooth(tooth - 0.1, tooth + 0.1, dens * 1.22 - 0.1);
+          const tone = 0.84 + 0.16 * vnoise(X / 5, Y / 5, seed + 21);
           // pinholes in the solid areas
-          if (hash(X, Y, seed + 31) > 0.985 && crisp[i] > 250) ink *= 0.35;
-          const g = Math.round(255 * Math.min(1, v * ink * 1.08));
+          const pin = hash(X, Y, seed + 31) > 0.988 && crisp[i] > 250 ? 0.3 : 1;
+          const g = Math.round(255 * Math.min(1, v * cover * tone * pin));
           d[i] = d[i + 1] = d[i + 2] = g;
         }
       }
