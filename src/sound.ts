@@ -26,6 +26,11 @@ class Sound {
     for (let i = 0; i < len; i++) d[i] = Math.random() * 2 - 1;
   }
 
+  /** shared graph for other sound modules (null until a gesture wakes audio) */
+  get audio(): { ctx: AudioContext; master: GainNode; noise: AudioBuffer } | null {
+    return this.ctx && this.master && this.noise ? { ctx: this.ctx, master: this.master, noise: this.noise } : null;
+  }
+
   setEnabled(on: boolean) {
     this.enabled = on;
     if (this.master && this.ctx) this.master.gain.setTargetAtTime(on ? 0.55 : 0, this.ctx.currentTime, 0.05);

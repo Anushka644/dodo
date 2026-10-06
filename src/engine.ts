@@ -1,94 +1,137 @@
-import { Renderer } from './gl/renderer';
-import { ASPECT, PORTRAIT_H, PORTRAIT_W } from './note/layout';
+import { Renderer3D, type SheetDraw, type UniformValue } from './gl/renderer3d';
+import { lookAt, multiply, perspective, project, type Mat4 } from './gl/mat4';
+import { ASPECT } from './note/layout';
 import { Plates, drawMicro, loadFonts } from './note/plates';
 import { drawDodo } from './note/dodo';
 import { mint, type Issue } from './note/seed';
+import { PaperSheet, GRAVITY } from './physics/paper';
+import type { HandSensor } from './sense/hands';
+import { GestureTracker } from './sense/gestures';
+import { paperSound } from './paperSound';
 import { sound } from './sound';
+import type { Collider, HandGesture, PaperEnv, Pose, V2, V3 } from './contracts';
 
-export type Tool = 'lamp' | 'loupe' | 'uv' | 'back';
-export const TOOLS: Tool[] = ['lamp', 'loupe', 'uv', 'back'];
+// ------------------------------------------------------------------ world
 
-type Vec4 = [number, number, number, number];
+const FOV = (32 * Math.PI) / 180;
+const EYE: V3 = [0, 0.35, 8];
+const TARGET: V3 = [0, 0, 0];
+const HALF_H = Math.tan(FOV / 2) * EYE[2]; // half the visible height at z = 0
+const NOTE_H = 1; // world height of a banknote
+const HERO_GRID: [number, number] = [34, 15];
+const RAIN_GRID: [number, number] = [18, 8];
+const MAX_RAIN = 44;
+const PICK_RADIUS = 0.09; // fraction of screen height
 
-const toSrgbLinear = (c: number) => Math.pow(c, 2.2);
-const lin = (rgb: [number, number, number]) => rgb.map(toSrgbLinear);
+const lin = (rgb: [number, number, number]) => rgb.map((c) => Math.pow(c, 2.2));
+const clamp = (x: number, a: number, b: number) => Math.min(b, Math.max(a, x));
+const smooth = (a: number, b: number, x: number) => {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const add = (a: V3, b: V3): V3 => [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+const sub = (a: V3, b: V3): V3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const scale = (a: V3, s: number): V3 => [a[0] * s, a[1] * s, a[2] * s];
+const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norm = (a: V3): V3 => {
+  const l = Math.hypot(a[0], a[1], a[2]) || 1;
+  return [a[0] / l, a[1] / l, a[2] / l];
+};
+const dist = (a: V3, b: V3) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
 
-// critically damped spring step — the lamp has a little weight to it
-function damp(current: number, target: number, vel: { v: number }, omega: number, dt: number) {
-  const x = current - target;
-  const exp = Math.exp(-omega * dt);
-  const v = vel.v;
-  const next = target + (x + (v + omega * x) * dt) * exp;
-  vel.v = (v - omega * (v + omega * x) * dt) * exp;
-  return next;
+export type Mode = 'intro' | 'mouse' | 'camera';
+
+interface Note {
+  id: number;
+  sheet: PaperSheet;
+  hero: boolean;
+  uniforms: Record<string, UniformValue>;
+  print: number;
+  rest: number; // seconds lying still on the floor
+  dying: number; // > 0 while sinking away
+  heldBy: number | null; // hand id pinching it
+  pin: number;
+  carriedBy: number | null; // hand id it rests on (-1 = the stand)
+  carry: number; // 0..1 attach weight, ramps up so it flies to the palm
+  crumple: number;
+  selected: number;
+  backlight: number;
 }
 
-interface NoteRect {
-  cx: number; // css px
-  cy: number;
-  halfH: number; // css px, along the note's short side
-  rotated: boolean;
+/** What a hand (or the mouse) is doing, already in world space. */
+interface Hand {
+  id: number;
+  pose: Pose;
+  palm: V3;
+  normal: V3;
+  up: V3;
+  pinch: V3;
+  pinchScreen: V2;
+  tip: V3;
+  tipDir: V3;
+  rub: V3;
+  rubIntensity: number;
+  pinching: boolean;
+  open: boolean;
+  fist: boolean;
+  openFor: number;
+  printDebt: number;
+  torch: number;
+}
+
+export interface HudState {
+  mode: Mode;
+  hands: number;
+  poses: Pose[];
+  printed: number;
+  tracking: 'off' | 'loading' | 'on' | 'error';
+  loadingMsg: string;
+  holding: boolean;
 }
 
 export class Engine {
-  private renderer: Renderer;
+  private renderer: Renderer3D;
   private plates!: Plates;
-  private dodo!: HTMLCanvasElement;
+  private notes: Note[] = [];
+  private nextId = 1;
+  private hero!: Note;
+  private issueTarget: Issue = mint('');
+  private printedCount = 0;
+
+  mode: Mode = 'intro';
   private video: HTMLVideoElement | null = null;
   private stream: MediaStream | null = null;
+  private sensor: HandSensor | null = null;
+  private gestures = new GestureTracker();
+  private hands = new Map<number, Hand>();
+  private tracking: HudState['tracking'] = 'off';
+  private loadingMsg = '';
+  private injected: HandGesture[] | null = null;
 
-  tool: Tool = 'lamp';
-  private weights: Vec4 = [1, 0, 0, 0];
+  // the mouse, standing in for a hand
+  private mouse = { x: 0.5, y: 0.5, down: false, inside: false, print: false, torch: false, crumple: false, depth: 1.2 };
+  private standTilt: V2 = [0, 0];
 
-  // pointer & lamp
-  private pointer = { x: 0, y: 0, active: false, touch: false };
-  private light = { x: ASPECT * 0.5, y: 0.5, z: 1.0 };
-  private lightVel = { x: { v: 0 }, y: { v: 0 } };
-  private lampHeight = 0.42;
-  private loupeMag = 5;
-  private idle = true;
-  private idleT = 0;
-
-  // flicker & ceremony
-  private lampOn = 0;
-  private lampBase = 0;
-  private lampWait = 0;
-  private uvOn = 0;
-  private uvSwitchAt = -1;
-  private print = 0;
-  private printing = false;
-  private loupeR = 0;
-  private loupeVel = { v: 0 };
-
-  // the mint
-  private issueTarget: Issue = mint('');
-  private params = {
-    rosA: [...this.issueTarget.rosA] as Vec4,
-    rosB: [...this.issueTarget.rosB] as Vec4,
-    band: [...this.issueTarget.band] as Vec4,
-    field: [...this.issueTarget.field] as Vec4,
-    ink: lin(this.issueTarget.ink),
-    iris0: lin(this.issueTarget.iris[0]),
-    iris1: lin(this.issueTarget.iris[1]),
-    iris2: lin(this.issueTarget.iris[2]),
-  };
-  private reprintTimer = 0;
-
-  private rect: NoteRect = { cx: 0, cy: 0, halfH: 100, rotated: false };
-  private dpr = 1;
-  private scale = 1; // adaptive resolution
+  private viewProj!: Mat4;
+  private aspect = 1;
+  private scaleRes = 1;
   private frameTimes: number[] = [];
+  private raf = 0;
   private last = performance.now();
   private start = performance.now();
-  private raf = 0;
-  private dirty = true;
+  private room = 1;
+  private glow = 0;
+  private uvHum = false;
+  private videoFade = 0;
+  private reprintTimer = 0;
   private reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-  onInteract?: () => void;
+  onHud?: (s: HudState) => void;
+  private hudAt = 0;
+  overlay: CanvasRenderingContext2D | null = null;
 
   constructor(private canvas: HTMLCanvasElement) {
-    this.renderer = new Renderer(canvas);
-    // GPUs reset; when the context comes back, the simplest correct thing is a fresh start
+    this.renderer = new Renderer3D(canvas);
     canvas.addEventListener('webglcontextlost', (e) => e.preventDefault());
     canvas.addEventListener('webglcontextrestored', () => location.reload());
   }
@@ -101,15 +144,11 @@ export class Engine {
       this.renderer.setPlate(name, this.plates.canvas(name));
     }
     this.renderer.setMicro(drawMicro());
-    this.dodo = drawDodo();
-    this.renderer.setPortrait(this.dodo);
+    this.renderer.setPortrait(drawDodo());
     this.layout();
-    this.printing = true;
-    if (this.reducedMotion || new URLSearchParams(location.search).has('still')) {
-      this.print = 1;
-      this.lampOn = 1;
-      this.lampBase = 1;
-    }
+    this.hero = this.spawn(true);
+    this.hero.print = this.reducedMotion || new URLSearchParams(location.search).has('still') ? 1 : 0;
+    this.placeOnStand(this.hero, true);
     if (import.meta.env.DEV) (window as unknown as { engine: Engine }).engine = this;
     this.loop();
   }
@@ -121,130 +160,177 @@ export class Engine {
 
   // ------------------------------------------------------------ layout
 
-  /** Fits the note into the space the UI leaves, turning it upright on tall screens. */
   layout() {
+    const dpr = Math.min(window.devicePixelRatio || 1, 2);
     const w = window.innerWidth;
     const h = window.innerHeight;
-    const rotated = h > w * 1.15;
-    const top = rotated ? 64 : 76;
-    const bottom = rotated ? 176 : 108;
-    const side = rotated ? 16 : 40;
-    const availW = w - side * 2;
-    const availH = h - top - bottom;
-    // long side, short side of the available box in note orientation
-    const along = rotated ? availH : availW;
-    const across = rotated ? availW : availH;
-    const halfH = Math.max(40, Math.min(across / 2, along / (2 * ASPECT)) * 0.96);
-    this.rect = { cx: w / 2, cy: top + availH / 2, halfH, rotated };
-    this.resize();
-  }
-
-  private resize() {
-    this.dpr = Math.min(window.devicePixelRatio || 1, 2);
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    let s = this.dpr * this.scale;
-    const maxPixels = 2560 * 1440; // past this, the eye can't tell and the fan can
+    this.aspect = w / h;
+    let s = dpr * this.scaleRes;
+    const maxPixels = 2560 * 1440;
     if (w * h * s * s > maxPixels) s = Math.sqrt(maxPixels / (w * h));
     this.renderer.resize(Math.round(w * s), Math.round(h * s));
-    this.dirty = true;
-  }
-
-  /** css px → note space, the same mapping the shader uses. */
-  private toNote(x: number, y: number) {
-    let dx = x - this.rect.cx;
-    let dy = -(y - this.rect.cy); // gl y-up
-    if (this.rect.rotated) [dx, dy] = [-dy, dx];
-    return { x: dx / (2 * this.rect.halfH) + ASPECT / 2, y: -dy / (2 * this.rect.halfH) + 0.5 };
-  }
-
-  /** note space → css px (for placing UI against the note). */
-  noteToScreen(nx: number, ny: number) {
-    let dx = (nx - ASPECT / 2) * 2 * this.rect.halfH;
-    let dy = -(ny - 0.5) * 2 * this.rect.halfH;
-    if (this.rect.rotated) [dx, dy] = [dy, -dx];
-    return { x: this.rect.cx + dx, y: this.rect.cy - dy };
-  }
-
-  get noteRect() {
-    return this.rect;
-  }
-
-  // ------------------------------------------------------------ input
-
-  pointerMove(x: number, y: number, touch: boolean) {
-    // on touch, hold the lamp and lens a little above the finger so it doesn't hide what you're looking at
-    const lift = touch ? (this.tool === 'loupe' ? 110 : 60) : 0;
-    this.pointer = { x, y: y - lift, active: true, touch };
-    if (this.idle) {
-      this.idle = false;
-      this.onInteract?.();
+    if (this.overlay) {
+      this.overlay.canvas.width = Math.round(w * dpr);
+      this.overlay.canvas.height = Math.round(h * dpr);
     }
-    this.dirty = true;
+    const proj = perspective(FOV, this.aspect, 0.5, 40);
+    this.viewProj = multiply(proj, lookAt(EYE, TARGET, [0, 1, 0]));
   }
 
-  nudge(dx: number, dy: number) {
-    if (this.idle) {
-      const s = this.noteToScreen(this.light.x, this.light.y);
-      this.pointer = { x: s.x, y: s.y, active: true, touch: false };
-      this.idle = false;
-      this.onInteract?.();
+  private get floorY() {
+    return -HALF_H + 0.12;
+  }
+
+  /** cover-fit scale between the viewport and the camera image */
+  private videoScale(): V2 {
+    const v = this.video;
+    if (!v || !v.videoWidth) return [1, 1];
+    const va = v.videoWidth / v.videoHeight;
+    return this.aspect > va ? [1, va / this.aspect] : [this.aspect / va, 1];
+  }
+
+  /** mirrored video coords → viewport coords (both normalised, y down) */
+  private videoToScreen(p: V2): V2 {
+    const [sx, sy] = this.videoScale();
+    return [(p[0] - 0.5) / sx + 0.5, (p[1] - 0.5) / sy + 0.5];
+  }
+
+  /** the world point under a viewport position, at depth z */
+  private screenToWorld(s: V2, z: number): V3 {
+    const tanH = Math.tan(FOV / 2);
+    const cx = (s[0] * 2 - 1) * tanH * this.aspect;
+    const cy = (1 - s[1] * 2) * tanH;
+    const fwd = norm(sub(TARGET, EYE));
+    const right = norm(cross(fwd, [0, 1, 0]));
+    const up = cross(right, fwd);
+    const d = norm(add(add(scale(right, cx), scale(up, cy)), fwd));
+    const t = (z - EYE[2]) / d[2];
+    return add(EYE, scale(d, t));
+  }
+
+  private worldToScreen(p: ArrayLike<number>, i = 0): V3 {
+    const n = project(this.viewProj, p, i);
+    return [(n[0] + 1) / 2, (1 - n[1]) / 2, n[2]];
+  }
+
+  // ------------------------------------------------------------ notes
+
+  private spawn(hero: boolean): Note {
+    const [cols, rows] = hero ? HERO_GRID : RAIN_GRID;
+    const sheet = new PaperSheet({ cols, rows, width: NOTE_H * ASPECT, height: NOTE_H });
+    const issue = hero ? this.issueTarget : mint(`${this.issueTarget.name}#${this.printedCount}`);
+    const note: Note = {
+      id: this.nextId++,
+      sheet,
+      hero,
+      uniforms: {},
+      print: 1,
+      rest: 0,
+      dying: 0,
+      heldBy: null,
+      pin: -1,
+      carriedBy: null,
+      carry: 0,
+      crumple: 0,
+      selected: 0,
+      backlight: 0,
+    };
+    this.applyIssue(note, issue);
+    this.notes.push(note);
+    return note;
+  }
+
+  private applyIssue(note: Note, issue: Issue) {
+    Object.assign(note.uniforms, {
+      uRosA: issue.rosA,
+      uRosB: issue.rosB,
+      uBand: issue.band,
+      uField: issue.field,
+      uInk: lin(issue.ink),
+      uIris0: lin(issue.iris[0]),
+      uIris1: lin(issue.iris[1]),
+      uIris2: lin(issue.iris[2]),
+    });
+  }
+
+  /** with no hand to hold it, the hero waits in mid-air, turning toward the pointer */
+  private standPose(): { c: V3; r: V3; u: V3 } {
+    const [tx, ty] = this.standTilt;
+    const t = (performance.now() - this.start) / 1000;
+    const c: V3 = [0, 0.3 + Math.sin(t * 0.9) * 0.05, 2.7];
+    const yaw = tx * 0.6 + Math.sin(t * 0.45) * 0.06;
+    const pitch = ty * 0.45 + Math.sin(t * 0.7) * 0.03;
+    const r: V3 = [Math.cos(yaw), 0, -Math.sin(yaw)];
+    const u: V3 = norm([0, Math.cos(pitch), Math.sin(pitch)]);
+    return { c, r, u };
+  }
+
+  private placeOnStand(note: Note, snap: boolean) {
+    const { c, r, u } = this.standPose();
+    if (snap) note.sheet.placeFlat(c, r, u);
+    note.carriedBy = -1;
+    note.carry = snap ? 1 : 0;
+  }
+
+  private release(note: Note) {
+    if (note.pin >= 0) note.sheet.unpin(note.pin);
+    note.pin = -1;
+    note.heldBy = null;
+  }
+
+  private drop(note: Note) {
+    note.carriedBy = null;
+    note.carry = 0;
+    note.sheet.detach();
+  }
+
+  /** the note (and particle) nearest a screen point, if it's within reach */
+  private pick(s: V2): { note: Note; index: number } | null {
+    let best: { note: Note; index: number } | null = null;
+    let bestD = PICK_RADIUS;
+    for (const note of this.notes) {
+      if (note.dying > 0 || note.heldBy !== null) continue;
+      const pos = note.sheet.positions;
+      for (let i = 0; i < note.sheet.count; i += 2) {
+        const sp = this.worldToScreen(pos, i * 3);
+        const d = Math.hypot((sp[0] - s[0]) * this.aspect, sp[1] - s[1]);
+        if (d < bestD) {
+          bestD = d;
+          best = { note, index: i };
+        }
+      }
     }
-    this.pointer.x += dx;
-    this.pointer.y += dy;
-    this.dirty = true;
+    return best;
   }
 
-  wheel(delta: number) {
-    if (this.tool === 'loupe') {
-      this.loupeMag = Math.min(12, Math.max(2.5, this.loupeMag * Math.exp(-delta * 0.0015)));
-    } else {
-      this.lampHeight = Math.min(1.1, Math.max(0.1, this.lampHeight * Math.exp(delta * 0.0012)));
+  private printOne(at: V3) {
+    const rain = this.notes.filter((n) => !n.hero && n.dying === 0);
+    if (rain.length >= MAX_RAIN) {
+      // the oldest note in circulation is withdrawn
+      const old = rain.find((n) => n.heldBy === null && n.carriedBy === null) ?? rain[0];
+      old.dying = 0.001;
     }
-    this.dirty = true;
+    this.printedCount++;
+    const note = this.spawn(false);
+    const rnd = (a: number, b: number) => a + Math.random() * (b - a);
+    const yaw = rnd(-0.7, 0.7);
+    const r = norm([Math.cos(yaw), rnd(-0.5, 0.5), Math.sin(yaw)]);
+    const u = norm(cross([rnd(-0.3, 0.3), rnd(-0.3, 0.3), 1], r));
+    note.sheet.placeFlat(add(at, [rnd(-0.12, 0.12), rnd(-0.08, 0.08), rnd(-0.1, 0.1)]), r, u);
+    note.sheet.setVelocity([rnd(-1.8, 1.8), rnd(0.8, 2.8), rnd(0.2, 1.6)], [rnd(-4, 4), rnd(-4, 4), rnd(-4, 4)]);
   }
 
-  setTool(tool: Tool) {
-    if (tool === this.tool) return;
-    this.tool = tool;
-    sound.click();
-    if (tool === 'uv') {
-      this.uvSwitchAt = performance.now();
-      this.uvOn = 0;
-      sound.uvOn();
-    } else {
-      sound.uvOff();
-    }
-    if (tool === 'back') sound.rustle();
-    if (tool === 'loupe') sound.glass();
-    this.dirty = true;
-  }
-
-  setName(name: string) {
-    const next = mint(name);
-    const changed = next.serial !== this.issueTarget.serial || next.name !== this.issueTarget.name;
-    this.issueTarget = next;
-    if (!changed) return;
-    sound.tick();
-    // the guilloche morphs every frame; the type is re-set once you pause
-    window.clearTimeout(this.reprintTimer);
-    this.reprintTimer = window.setTimeout(() => this.reprint(), 90);
-    this.dirty = true;
-  }
-
-  private reprint() {
-    for (const p of this.plates.issue(this.issueTarget, this.cameraOn)) this.renderer.setPlate(p, this.plates.canvas(p));
-    this.dirty = true;
-  }
-
-  get issue() {
-    return this.issueTarget;
-  }
+  // ------------------------------------------------------------ camera
 
   async startCamera(): Promise<boolean> {
+    if (this.tracking === 'loading' || this.tracking === 'on') return true;
+    sound.wake();
+    this.tracking = 'loading';
+    this.loadingMsg = 'Asking for the camera…';
+    this.emitHud(true);
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+        video: { facingMode: 'user', width: { ideal: 960 }, height: { ideal: 540 } },
         audio: false,
       });
       const v = document.createElement('video');
@@ -253,231 +339,509 @@ export class Engine {
       v.srcObject = this.stream;
       await v.play();
       this.video = v;
-      this.renderer.setPortrait(v);
-      this.reprint();
+      this.mode = 'camera';
+      this.loadingMsg = 'Warming up the press…';
+      this.emitHud(true);
+      // MediaPipe is heavy: only load it once you've chosen to use your hands
+      const { HandSensor } = await import('./sense/hands');
+      this.sensor = await HandSensor.create(v, (msg) => {
+        this.loadingMsg = msg;
+        this.emitHud(true);
+      });
+      this.tracking = 'on';
+      this.emitHud(true);
       return true;
-    } catch {
+    } catch (err) {
+      console.warn(err);
+      const hadCamera = !!this.stream;
+      this.tracking = 'error';
+      this.loadingMsg = hadCamera ? 'Hand tracking could not start — the mouse will do.' : 'No camera — the mouse will do.';
       this.stopCamera();
+      this.mode = 'mouse';
+      this.emitHud(true);
       return false;
     }
   }
 
   stopCamera() {
+    this.sensor?.dispose();
+    this.sensor = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
-    if (this.video) {
-      this.video = null;
-      this.renderer.setPortrait(this.dodo);
-      this.reprint();
+    this.video = null;
+    for (const [id] of this.hands) if (id >= 0) this.letGo(id);
+    if (this.tracking !== 'error') this.tracking = 'off';
+  }
+
+  useMouse() {
+    this.mode = 'mouse';
+    this.emitHud(true);
+  }
+
+  // ------------------------------------------------------------ pointer
+
+  pointer(x: number, y: number, down: boolean | null) {
+    this.mouse.x = x / window.innerWidth;
+    this.mouse.y = y / window.innerHeight;
+    this.mouse.inside = true;
+    if (down !== null) this.mouse.down = down;
+    this.standTilt = [(this.mouse.x - 0.5) * 2, (this.mouse.y - 0.5) * 2];
+  }
+
+  pointerLeave() {
+    this.mouse.inside = false;
+    this.mouse.down = false;
+  }
+
+  setPrinting(on: boolean) {
+    if (on) sound.wake();
+    this.mouse.print = on;
+  }
+
+  setTorch(on: boolean) {
+    if (on) sound.wake();
+    this.mouse.torch = on;
+  }
+
+  setCrumple(on: boolean) {
+    this.mouse.crumple = on;
+  }
+
+  wheel(delta: number) {
+    this.mouse.depth = clamp(this.mouse.depth - delta * 0.004, -1.5, 4.5);
+  }
+
+  /** bring the hero back to where you can see it */
+  summon() {
+    const h = this.hero;
+    this.release(h);
+    h.sheet.unpinAll();
+    h.crumple = 0;
+    h.rest = 0;
+    this.placeOnStand(h, false);
+  }
+
+  setName(name: string) {
+    const next = mint(name);
+    if (next.serial === this.issueTarget.serial && next.name === this.issueTarget.name) return;
+    this.issueTarget = next;
+    this.applyIssue(this.hero, next);
+    window.clearTimeout(this.reprintTimer);
+    this.reprintTimer = window.setTimeout(() => {
+      for (const p of this.plates.issue(this.issueTarget)) this.renderer.setPlate(p, this.plates.canvas(p));
+    }, 90);
+  }
+
+  get issue() {
+    return this.issueTarget;
+  }
+
+  /** dev/test: drive the world with synthetic gestures instead of the camera */
+  inject(gestures: HandGesture[] | null) {
+    this.injected = gestures;
+    if (gestures) this.mode = 'camera';
+  }
+
+  // ------------------------------------------------------------ hands
+
+  private handFromGesture(g: HandGesture, dt: number): Hand {
+    const prev = this.hands.get(g.id);
+    // a bigger palm in the image means a hand closer to the lens
+    const z = clamp(((g.palmSize - 0.16) / 0.16) * 3.2 + 0.4, -1.5, 5.2);
+    const w = (p: V2) => this.screenToWorld(this.videoToScreen(p), z);
+    return {
+      id: g.id,
+      pose: g.pose,
+      palm: w(g.palm),
+      normal: norm(g.palmNormal),
+      up: norm(g.palmUp),
+      pinch: w(g.pinch.point),
+      pinchScreen: this.videoToScreen(g.pinch.point),
+      tip: w(g.point.tip),
+      tipDir: norm([g.point.dir[0], -g.point.dir[1], -0.35]),
+      rub: w(g.rub.point),
+      rubIntensity: g.rub.active ? Math.max(0.25, g.rub.intensity) : 0,
+      pinching: g.pinch.active,
+      open: g.open,
+      fist: g.fist,
+      openFor: g.open ? (prev?.openFor ?? 0) + dt : 0,
+      printDebt: prev?.printDebt ?? 0,
+      torch: prev?.torch ?? 0,
+    };
+  }
+
+  private handFromMouse(): Hand | null {
+    if (!this.mouse.inside) return null;
+    const prev = this.hands.get(-1);
+    const s: V2 = [this.mouse.x, this.mouse.y];
+    const p = this.screenToWorld(s, this.mouse.depth);
+    const pose: Pose = this.mouse.print ? 'rub' : this.mouse.torch ? 'point' : this.mouse.crumple ? 'fist' : this.mouse.down ? 'pinch' : 'none';
+    return {
+      id: -1,
+      pose,
+      palm: p,
+      normal: [0, 0, 1],
+      up: [0, 1, 0],
+      pinch: p,
+      pinchScreen: s,
+      tip: add(p, [0, 0, 0.6]),
+      tipDir: [0, 0, -1],
+      rub: p,
+      rubIntensity: this.mouse.print ? 1 : 0,
+      pinching: this.mouse.down,
+      open: false,
+      fist: this.mouse.crumple,
+      openFor: 0,
+      printDebt: prev?.printDebt ?? 0,
+      torch: prev?.torch ?? 0,
+    };
+  }
+
+  private letGo(id: number) {
+    for (const n of this.notes) {
+      if (n.heldBy === id) this.release(n);
+      if (n.carriedBy === id) this.drop(n);
     }
-    this.dirty = true;
   }
 
-  get cameraOn() {
-    return !!this.video;
+  private updateHands(now: number, dt: number) {
+    let gestures: HandGesture[] | null = null;
+    if (this.injected) gestures = this.injected;
+    else if (this.sensor) {
+      const frame = this.sensor.detect(now);
+      if (frame) gestures = this.gestures.update(frame);
+    }
+    const next = new Map<number, Hand>();
+    if (gestures) for (const g of gestures) next.set(g.id, this.handFromGesture(g, dt));
+    else for (const [id, h] of this.hands) if (id >= 0) next.set(id, h); // no new video frame: keep them
+    const camHands = [...next.keys()].some((id) => id >= 0);
+    const m = this.handFromMouse();
+    if (m && !camHands) next.set(-1, m);
+    for (const [id] of this.hands) if (!next.has(id)) this.letGo(id);
+    this.hands = next;
   }
 
-  /** Renders a fresh frame and crops the note out of it. */
-  async capture(): Promise<Blob | null> {
-    this.frame(performance.now(), true);
-    const src = this.canvas;
-    const k = src.width / window.innerWidth;
-    const { cx, cy, halfH, rotated } = this.rect;
-    const pad = 24;
-    const w = (rotated ? 2 * halfH : 2 * halfH * ASPECT) + pad * 2;
-    const h = (rotated ? 2 * halfH * ASPECT : 2 * halfH) + pad * 2;
-    const out = document.createElement('canvas');
-    out.width = Math.round(w * k);
-    out.height = Math.round(h * k);
-    out.getContext('2d')!.drawImage(src, (cx - w / 2) * k, (cy - h / 2) * k, w * k, h * k, 0, 0, out.width, out.height);
-    return new Promise((res) => out.toBlob(res, 'image/png'));
-  }
+  private act(dt: number) {
+    for (const hand of this.hands.values()) {
+      const held = this.notes.find((n) => n.heldBy === hand.id);
+      const carried = this.notes.find((n) => n.carriedBy === hand.id);
 
-  /** Dev/test helper: jump every transition to its end state. */
-  settle() {
-    const goal: Vec4 = [this.tool === 'lamp' ? 1 : 0, this.tool === 'loupe' ? 1 : 0, this.tool === 'uv' ? 1 : 0, this.tool === 'back' ? 1 : 0];
-    this.weights = goal;
-    this.uvSwitchAt = -1e6;
-    this.loupeR = this.tool === 'loupe' ? 128 : 0;
-    const t = this.toNote(this.pointer.x, this.pointer.y);
-    this.light.x = t.x;
-    this.light.y = t.y;
-    this.light.z = this.tool === 'loupe' ? 0.5 : this.lampHeight;
-    this.dirty = true;
+      // pinch: take hold of the nearest paper and let it dangle
+      if (hand.pinching && !held) {
+        const hit = this.pick(hand.pinchScreen);
+        if (hit) {
+          const n = hit.note;
+          if (n.carriedBy !== null) this.drop(n);
+          n.heldBy = hand.id;
+          n.pin = hit.index;
+          n.rest = 0;
+          paperSound.grab();
+        }
+      } else if (!hand.pinching && held) {
+        this.release(held);
+        paperSound.release();
+      }
+      if (held && held.pin >= 0) held.sheet.pin(held.pin, hand.pinch, 1);
+
+      // fist: crumple whatever you have
+      const squeezed = held ?? carried;
+      if (hand.fist && squeezed) {
+        squeezed.crumple = Math.min(1, squeezed.crumple + dt * 2.2);
+        if (carried) carried.sheet.detach();
+        squeezed.sheet.crumple(hand.palm, squeezed.crumple);
+        paperSound.crumple(squeezed.crumple);
+      } else if (squeezed && squeezed.crumple > 0) {
+        squeezed.crumple = Math.max(0, squeezed.crumple - dt * 3);
+      }
+
+      // open palm: money comes to you, and rests there
+      if (hand.open && !held && !carried && hand.openFor > 0.35) {
+        const free = this.notes
+          .filter((n) => n.heldBy === null && (n.carriedBy === null || n.carriedBy === -1) && n.dying === 0)
+          .sort((a, b) => Number(b.hero) - Number(a.hero) || dist(a.sheet.centroid(), hand.palm) - dist(b.sheet.centroid(), hand.palm))[0];
+        if (free) {
+          free.carriedBy = hand.id;
+          free.carry = 0;
+          paperSound.catchNote();
+        }
+      }
+      if (carried && !hand.fist) {
+        if (hand.pose === 'point' || hand.pose === 'rub') {
+          // busy hands drop what they carry
+          this.drop(carried);
+        } else {
+          carried.carry = Math.min(1, carried.carry + dt * 2.5);
+          const n = hand.normal;
+          const right = norm(cross(hand.up, n));
+          const up = norm(cross(n, right));
+          const c = add(add(hand.palm, scale(n, 0.14)), scale(up, 0.2));
+          carried.sheet.attach(c, right, up, 0.25 + 0.6 * carried.carry);
+        }
+      }
+
+      // point: a UV torch on your fingertip
+      hand.torch = clamp(hand.torch + (hand.pose === 'point' ? dt * 4 : -dt * 5), 0, 1);
+
+      // rub thumb across fingers: print money
+      if (hand.pose === 'rub' && hand.rubIntensity > 0) {
+        hand.printDebt += dt * (3 + 9 * hand.rubIntensity);
+        while (hand.printDebt >= 1) {
+          hand.printDebt -= 1;
+          this.printOne(hand.rub);
+        }
+      } else hand.printDebt = Math.min(hand.printDebt, 0.6);
+    }
+
+    // the stand: the hero waits in mid-air until a hand takes it
+    const h = this.hero;
+    if (h.carriedBy === -1 && h.heldBy === null) {
+      h.carry = Math.min(1, h.carry + dt * 1.2);
+      const { c, r, u } = this.standPose();
+      h.sheet.attach(c, r, u, 0.2 + 0.75 * h.carry);
+    }
   }
 
   // ------------------------------------------------------------ frame
 
   private loop = () => {
     this.raf = requestAnimationFrame(this.loop);
-    const now = performance.now();
-    this.frame(now, false);
+    this.frame(performance.now());
   };
 
-  private frame(now: number, force: boolean) {
+  private frame(now: number) {
     const dt = Math.min(0.05, (now - this.last) / 1000);
     this.last = now;
     const t = (now - this.start) / 1000;
-    let animating = false;
 
-    // the press runs once, then the lamp flickers on
-    if (this.printing && this.print < 1) {
-      this.print = Math.min(1, this.print + dt / 2.6);
-      animating = true;
-      if (this.print >= 1) {
-        this.printing = false;
-        this.lampWait = 0.35; // work light off, a beat of dark…
-        sound.press();
+    if (this.hero.print < 1) this.hero.print = Math.min(1, this.hero.print + dt / 2.6);
+
+    this.updateHands(now, dt);
+    this.act(dt);
+
+    // every open palm catches falling money
+    const colliders: Collider[] = [];
+    for (const hand of this.hands.values()) {
+      if (hand.id >= 0 && hand.open) {
+        colliders.push({ kind: 'disk', center: add(hand.palm, scale(hand.normal, 0.04)), normal: hand.normal, radius: 0.6, friction: 0.85 });
       }
     }
-    if (this.print < 1) {
-      // a dim work light while the note is printed
-      this.lampOn = 0.55 * Math.min(1, this.print * 3);
-    } else if (this.lampBase < 1) {
-      // …then the lamp stutters on, like they do
-      if (this.lampWait > 0) {
-        this.lampWait -= dt;
-        this.lampOn = 0;
-      } else {
-        this.lampBase = Math.min(1, this.lampBase + dt * 1.8);
-        const stutter = this.reducedMotion || this.lampBase > 0.75 ? 1 : Math.random() < 0.4 ? 0.12 : 1;
-        this.lampOn = this.lampBase * stutter;
+    const env: PaperEnv = { gravity: GRAVITY, wind: [Math.sin(t * 0.3) * 0.15, 0, 0], colliders, floorY: this.floorY };
+
+    let maxSpeed = 0;
+    const halfW = HALF_H * this.aspect;
+    for (const n of [...this.notes]) {
+      if (n.dying > 0) {
+        n.dying += dt;
+        const pos = n.sheet.positions;
+        for (let i = 1; i < pos.length; i += 3) pos[i] -= dt * 1.4;
+        if (n.dying > 1.6) this.remove(n);
+        continue;
       }
-      animating = true;
-    }
-
-    // where the lamp wants to be
-    let target: { x: number; y: number };
-    if (this.print < 1) {
-      // while the press runs, a high work light over the middle
-      target = { x: ASPECT * 0.5, y: 0.5 };
-    } else if (this.idle) {
-      // until you take it, the lamp wanders over the note by itself
-      this.idleT += dt;
-      const k = this.idleT * 0.32;
-      target = {
-        x: ASPECT * 0.5 + Math.sin(k) * ASPECT * 0.36 + Math.sin(k * 2.3) * 0.08,
-        y: 0.5 + Math.sin(k * 1.7 + 1.0) * 0.3,
-      };
-      animating = true;
-    } else {
-      target = this.toNote(this.pointer.x, this.pointer.y);
-    }
-    const omega = this.tool === 'loupe' ? 26 : 13;
-    const nx = damp(this.light.x, target.x, this.lightVel.x, omega, dt);
-    const ny = damp(this.light.y, target.y, this.lightVel.y, omega, dt);
-    if (Math.abs(nx - this.light.x) + Math.abs(ny - this.light.y) > 1e-5) animating = true;
-    this.light.x = nx;
-    this.light.y = ny;
-    const zTarget = this.print < 1 ? 1.0 : this.tool === 'loupe' ? 0.5 : this.lampHeight;
-    this.light.z += (zTarget - this.light.z) * Math.min(1, dt * 10);
-    if (Math.abs(zTarget - this.light.z) > 1e-4) animating = true;
-
-    // tool crossfade
-    const goal: Vec4 = [this.tool === 'lamp' ? 1 : 0, this.tool === 'loupe' ? 1 : 0, this.tool === 'uv' ? 1 : 0, this.tool === 'back' ? 1 : 0];
-    const rate = Math.min(1, dt * 7);
-    for (let i = 0; i < 4; i++) {
-      const d = goal[i] - this.weights[i];
-      this.weights[i] = Math.abs(d) < 0.002 ? goal[i] : this.weights[i] + d * rate;
-      if (this.weights[i] !== goal[i]) animating = true;
-    }
-
-    // a UV tube never just turns on
-    if (this.tool === 'uv') {
-      const e = (now - this.uvSwitchAt) / 1000;
-      if (this.reducedMotion) this.uvOn = 1;
-      else if (e > 0.62) this.uvOn = 0.97 + 0.03 * Math.sin(now * 0.63);
-      else {
-        const seq = [[0.05, 0.7], [0.11, 0.05], [0.16, 0.9], [0.24, 0.15], [0.3, 0.55], [0.38, 0.1], [0.46, 1]];
-        let v = 0;
-        for (const [at, val] of seq) if (e >= at) v = val;
-        this.uvOn = v;
-        if (Math.random() < 0.15) sound.crackle();
+      const before = n.sheet.centroid();
+      n.sheet.step(dt, env);
+      const after = n.sheet.centroid();
+      const speed = dist(before, after) / Math.max(dt, 1e-3);
+      if (n.heldBy === null && n.carriedBy === null) maxSpeed = Math.max(maxSpeed, speed);
+      if (n.heldBy === null && n.carriedBy === null && after[1] < this.floorY + 0.4 && speed < 0.2) n.rest += dt;
+      else n.rest = 0;
+      if (!n.hero && n.rest > 9) n.dying = 0.001;
+      const gone = Math.abs(after[0]) > halfW + 2.5 || after[1] < this.floorY - 2 || after[2] > EYE[2] - 0.8 || after[2] < -12;
+      if (gone) {
+        if (n.hero) {
+          this.release(n);
+          n.sheet.unpinAll();
+          this.placeOnStand(n, true);
+        } else this.remove(n);
       }
-      if (!this.reducedMotion) animating = true;
+      // held up high: backlit by the light at the top of the screen
+      const sp = this.worldToScreen(after);
+      const lifted = n.heldBy !== null || (n.carriedBy !== null && n.carriedBy >= 0);
+      n.backlight += ((lifted ? smooth(0.34, 0.12, sp[1]) : 0) - n.backlight) * Math.min(1, dt * 6);
+      n.selected *= Math.exp(-dt * 10);
+    }
+    // in mouse mode, a dropped hero drifts back up after a moment
+    if (this.mode !== 'camera' && this.hero.rest > 2.5) this.summon();
+
+    // what a pinch would grab right now
+    for (const hand of this.hands.values()) {
+      if (hand.pinching || hand.pose === 'rub' || hand.pose === 'point') continue;
+      const hit = this.pick(hand.pinchScreen);
+      if (hit) hit.note.selected = 1;
     }
 
-    // loupe: springs open, folds away
-    const rTarget = this.tool === 'loupe' ? (this.pointer.touch ? 90 : 128) : 0;
-    this.loupeR = damp(this.loupeR, rTarget, this.loupeVel, 18, dt);
-    if (Math.abs(this.loupeR - rTarget) > 0.2) animating = true;
-
-    // the mint: guilloche params glide toward the new name
-    const P = this.params;
-    const T = this.issueTarget;
-    const g = Math.min(1, dt * 5);
-    const glide = (a: number[], b: readonly number[]) => {
-      let moved = false;
-      for (let i = 0; i < a.length; i++) {
-        const d = b[i] - a[i];
-        if (Math.abs(d) > 1e-4) moved = true;
-        a[i] += d * g;
-      }
-      return moved;
-    };
-    if (glide(P.rosA, T.rosA)) animating = true;
-    if (glide(P.rosB, T.rosB)) animating = true;
-    if (glide(P.band, T.band)) animating = true;
-    if (glide(P.field, T.field)) animating = true;
-    if (glide(P.ink, lin(T.ink))) animating = true;
-    if (glide(P.iris0, lin(T.iris[0]))) animating = true;
-    if (glide(P.iris1, lin(T.iris[1]))) animating = true;
-    if (glide(P.iris2, lin(T.iris[2]))) animating = true;
-
-    if (this.video) {
-      this.renderer.refreshVideo(this.video);
-      animating = true;
+    // the room: a UV torch kills the lights; a note held high raises the window glow
+    const torch = Math.max(0, ...[...this.hands.values()].map((h) => h.torch));
+    const flicker = torch > 0 && torch < 1 && !this.reducedMotion && Math.random() < 0.3 ? 0.4 : 1;
+    this.room += (1 - 0.92 * torch * flicker - this.room) * Math.min(1, dt * 12);
+    if (torch > 0.5 && !this.uvHum) {
+      sound.uvOn();
+      this.uvHum = true;
+    } else if (torch < 0.2 && this.uvHum) {
+      sound.uvOff();
+      this.uvHum = false;
     }
+    this.glow = Math.max(0, ...this.notes.map((n) => n.backlight));
+    paperSound.flutter(maxSpeed);
+    paperSound.counter(Math.max(0, ...[...this.hands.values()].map((h) => (h.pose === 'rub' ? h.rubIntensity : 0))));
 
-    if (!animating && !this.dirty && !force) return;
-    this.dirty = false;
+    if (this.video) this.renderer.updateVideo(this.video);
+    this.videoFade = clamp(this.videoFade + (this.video && this.renderer.hasVideo ? dt * 1.5 : -dt * 3), 0, 1);
 
-    const k = this.canvas.width / window.innerWidth;
-    const H = this.canvas.height;
-    const pointerScreen = this.noteToScreen(this.light.x, this.light.y);
-    const camAspect = this.video ? this.video.videoWidth / Math.max(1, this.video.videoHeight) : 1;
-    const portraitAspect = PORTRAIT_W / PORTRAIT_H;
-    const camScale = camAspect > portraitAspect ? [portraitAspect / camAspect, 1] : [1, camAspect / portraitAspect];
-
-    const t0 = performance.now();
-    this.renderer.draw({
-      uRes: [this.canvas.width, H],
-      uNote: [this.rect.cx * k, H - this.rect.cy * k, this.rect.halfH * k, this.rect.rotated ? 1 : 0],
-      uLight: [this.light.x, this.light.y, this.light.z],
-      uCursor: [pointerScreen.x * k, H - pointerScreen.y * k],
-      uMode: this.weights,
-      uLampOn: this.lampOn,
-      uUvOn: this.uvOn,
-      uLoupeR: Math.max(0, this.loupeR * k),
-      uLoupeMag: this.loupeMag,
-      uTime: t,
-      uPrint: this.print,
-      uRosA: P.rosA,
-      uRosB: P.rosB,
-      uBand: P.band,
-      uField: P.field,
-      uInk: P.ink,
-      uIris0: P.iris0,
-      uIris1: P.iris1,
-      uIris2: P.iris2,
-      uCam: this.video ? 1 : 0,
-      uCamScale: camScale,
-    });
-    this.adapt(performance.now() - t0, dt);
+    this.render(t);
+    this.drawOverlay();
+    this.emitHud(false);
+    this.adapt(dt);
   }
 
-  // Keep it smooth on modest hardware: if frames run long, render fewer pixels.
-  private adapt(_cpu: number, dt: number) {
+  private remove(n: Note) {
+    this.notes = this.notes.filter((x) => x !== n);
+    this.renderer.releaseSheet(n.id);
+  }
+
+  private render(t: number) {
+    const torchHand = [...this.hands.values()].sort((a, b) => b.torch - a.torch)[0];
+    const torch = torchHand?.torch ?? 0;
+    const glowPos: V2 = [0.5, 0.97];
+    const backPos = this.screenToWorld([glowPos[0], 1 - glowPos[1]], -2);
+
+    const sheets: SheetDraw[] = this.notes
+      .map((n) => ({ n, z: n.sheet.centroid()[2] }))
+      .sort((a, b) => b.z - a.z)
+      .map(({ n }) => ({
+        id: n.id,
+        cols: n.sheet.cols,
+        rows: n.sheet.rows,
+        positions: n.sheet.positions,
+        normals: n.sheet.normals,
+        uvs: n.sheet.uvs,
+        indices: n.sheet.indices,
+        uniforms: {
+          ...n.uniforms,
+          uPrint: n.print,
+          uWrinkle: n.sheet.wrinkle,
+          uBacklight: n.backlight,
+          uTrans: n.backlight,
+          uSelected: n.heldBy === null ? n.selected * 0.6 : 0,
+        },
+      }));
+
+    this.renderer.frame(
+      {
+        uRes: [this.canvas.width, this.canvas.height],
+        uTime: t,
+        uVideoOn: this.videoFade,
+        uVideoScale: this.videoScale(),
+        uRoom: this.room,
+        uGlow: this.glow,
+        uGlowPos: glowPos,
+        uDpr: this.canvas.width / window.innerWidth,
+      },
+      {
+        uViewProj: this.viewProj,
+        uEye: EYE,
+        uTime: t,
+        uKeyDir: norm([-0.45, 0.75, 0.6]),
+        uKeyCol: [1.15, 1.0, 0.85],
+        uFillDir: norm([0.6, -0.2, 0.8]),
+        uFillCol: [0.12, 0.14, 0.18],
+        uAmbient: [0.12, 0.12, 0.13],
+        uRoom: this.room,
+        uBackPos: backPos,
+        uTorch: torchHand ? [...torchHand.tip, torch] : [0, 0, 0, 0],
+        uTorchDir: torchHand?.tipDir ?? [0, 0, -1],
+        uFibres: torch,
+        uCam: 0,
+        uCamScale: [1, 1],
+      },
+      sheets,
+    );
+  }
+
+  // ------------------------------------------------------------ overlay
+
+  /** a light touch of UI over the hands: the pinch ring, the torch, the press */
+  private drawOverlay() {
+    const ctx = this.overlay;
+    if (!ctx) return;
+    const W = ctx.canvas.width;
+    const H = ctx.canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const k = W / window.innerWidth;
+    const s = (p: V3) => {
+      const q = this.worldToScreen(p);
+      return [q[0] * W, q[1] * H] as const;
+    };
+    for (const hand of this.hands.values()) {
+      ctx.lineWidth = 1.2 * k;
+      if (hand.pose === 'point') {
+        const [tx, ty] = s(hand.tip);
+        const g = ctx.createRadialGradient(tx, ty, 0, tx, ty, 90 * k);
+        g.addColorStop(0, 'rgba(170,120,255,0.5)');
+        g.addColorStop(1, 'rgba(120,60,255,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(tx, ty, 90 * k, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.fillStyle = 'rgba(230,210,255,0.95)';
+        ctx.beginPath();
+        ctx.arc(tx, ty, 3 * k, 0, Math.PI * 2);
+        ctx.fill();
+      } else if (hand.pose === 'rub') {
+        const [rx, ry] = s(hand.rub);
+        ctx.strokeStyle = 'rgba(198,254,31,0.85)';
+        for (let i = 0; i < 3; i++) {
+          const r = ((performance.now() / 6 + i * 12) % 36) * k;
+          ctx.globalAlpha = 1 - r / (36 * k);
+          ctx.beginPath();
+          ctx.arc(rx, ry, r, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+        ctx.globalAlpha = 1;
+      } else {
+        const [px, py] = s(hand.pinch);
+        const holding = this.notes.some((n) => n.heldBy === hand.id);
+        ctx.strokeStyle = holding || hand.pinching ? 'rgba(198,254,31,0.95)' : 'rgba(236,230,216,0.5)';
+        ctx.beginPath();
+        ctx.arc(px, py, (hand.pinching ? 6 : 11) * k, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+  }
+
+  // ------------------------------------------------------------ hud
+
+  private emitHud(force: boolean) {
+    const now = performance.now();
+    if (!force && now - this.hudAt < 120) return;
+    this.hudAt = now;
+    const hands = [...this.hands.values()];
+    this.onHud?.({
+      mode: this.mode,
+      hands: hands.filter((h) => h.id >= 0).length,
+      poses: hands.map((h) => h.pose),
+      printed: this.printedCount,
+      tracking: this.tracking,
+      loadingMsg: this.loadingMsg,
+      holding: this.notes.some((n) => n.heldBy !== null || (n.carriedBy !== null && n.carriedBy >= 0)),
+    });
+  }
+
+  async capture(): Promise<Blob | null> {
+    this.render((performance.now() - this.start) / 1000);
+    return new Promise((res) => this.canvas.toBlob(res, 'image/png'));
+  }
+
+  private adapt(dt: number) {
     this.frameTimes.push(dt);
-    if (this.frameTimes.length < 40) return;
+    if (this.frameTimes.length < 45) return;
     const avg = this.frameTimes.reduce((a, b) => a + b, 0) / this.frameTimes.length;
     this.frameTimes = [];
-    if (avg > 0.026 && this.scale > 0.5) {
-      this.scale = Math.max(0.5, this.scale * 0.85);
-      this.resize();
-    } else if (avg < 0.0135 && this.scale < 1) {
-      this.scale = Math.min(1, this.scale * 1.1);
-      this.resize();
+    if (avg > 0.026 && this.scaleRes > 0.5) {
+      this.scaleRes = Math.max(0.5, this.scaleRes * 0.85);
+      this.layout();
+    } else if (avg < 0.0135 && this.scaleRes < 1) {
+      this.scaleRes = Math.min(1, this.scaleRes * 1.1);
+      this.layout();
     }
   }
 }

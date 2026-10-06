@@ -1,75 +1,68 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Engine, TOOLS, type Tool } from './engine';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Engine, type HudState } from './engine';
 import { sound } from './sound';
 import { DEFAULT_NAME } from './note/seed';
+import type { Pose } from './contracts';
 
-const COPY: Record<Tool, { name: string; short: string; spec: string; line: string; key: string }> = {
-  lamp: {
-    name: 'Lamp',
-    short: 'Lamp',
-    spec: 'Raking light · 3200 K',
-    line: 'Intaglio ink sits raised on the paper. Lower the lamp and the relief catches.',
-    key: '1',
-  },
-  loupe: {
-    name: 'Loupe',
-    short: 'Loupe',
-    spec: '×5 · LED ring',
-    line: 'The thin lines aren’t lines. Read them.',
-    key: '2',
-  },
-  uv: {
-    name: 'Ultraviolet',
-    short: 'UV',
-    spec: 'UV-A · 365 nm',
-    line: 'Real banknote paper stays dark. The things meant to glow, glow.',
-    key: '3',
-  },
-  back: {
-    name: 'Backlight',
-    short: 'Backlit',
-    spec: 'Transmitted light',
-    line: 'Hold it up to the window. The paper itself has a portrait.',
-    key: '4',
-  },
-};
+type Gesture = { pose: Pose; name: string; does: string; icon: ReactNode; keys?: string };
 
-const HINTS: Record<Tool, [string, string]> = {
-  // [pointer, touch]
-  lamp: ['Move the lamp · scroll to raise or lower it', 'Drag to move the lamp'],
-  loupe: ['Move the loupe · scroll to change magnification', 'Drag the loupe over the note'],
-  uv: ['Sweep the blacklight across the note', 'Drag the blacklight across the note'],
-  back: ['Move the light behind the paper', 'Drag the light behind the paper'],
-};
+const HAND_GESTURES: Gesture[] = [
+  { pose: 'open', name: 'Open hand', does: 'catch it', icon: <IconOpen /> },
+  { pose: 'pinch', name: 'Pinch', does: 'hold · flick to throw', icon: <IconPinch /> },
+  { pose: 'fist', name: 'Fist', does: 'crumple', icon: <IconFist /> },
+  { pose: 'point', name: 'Point', does: 'UV torch', icon: <IconPoint /> },
+  { pose: 'rub', name: 'Rub fingers', does: 'print money', icon: <IconRub /> },
+];
+
+const MOUSE_GESTURES: Gesture[] = [
+  { pose: 'pinch', name: 'Drag', does: 'hold · fling', icon: <IconPinch />, keys: 'drag' },
+  { pose: 'fist', name: 'Hold C', does: 'crumple', icon: <IconFist />, keys: 'C' },
+  { pose: 'point', name: 'Hold Shift', does: 'UV torch', icon: <IconPoint />, keys: '⇧' },
+  { pose: 'rub', name: 'Hold Space', does: 'print money', icon: <IconRub />, keys: '␣' },
+];
 
 const coarse = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<Engine | null>(null);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [tool, setToolState] = useState<Tool>('lamp');
+  const [hud, setHud] = useState<HudState>({
+    mode: 'intro',
+    hands: 0,
+    poses: [],
+    printed: 0,
+    tracking: 'off',
+    loadingMsg: '',
+    holding: false,
+  });
   const [name, setName] = useState('');
-  const [serial, setSerial] = useState('');
-  const [touched, setTouched] = useState(false);
-  const [camera, setCamera] = useState(false);
   const [soundOn, setSoundOn] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef(0);
+
+  const flash = (msg: string) => {
+    setToast(msg);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3400);
+  };
 
   useEffect(() => {
     const canvas = canvasRef.current!;
     let engine: Engine;
     try {
       engine = new Engine(canvas);
-    } catch {
+    } catch (e) {
+      console.error(e);
       setFailed(true);
       return;
     }
     engineRef.current = engine;
-    engine.onInteract = () => setTouched(true);
+    engine.overlay = overlayRef.current!.getContext('2d');
+    engine.onHud = setHud;
     engine.init().then(() => {
-      setSerial(engine.issue.serial);
       setReady(true);
       document.body.dataset.ready = '1';
     });
@@ -81,42 +74,39 @@ export function App() {
     };
   }, []);
 
-  const pickTool = useCallback((t: Tool) => {
-    sound.wake();
-    engineRef.current?.setTool(t);
-    setToolState(t);
-  }, []);
-
-  // keyboard: 1–4 for tools, arrows to steer the lamp
+  // keys stand in for the gestures when there's no camera
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      const typing = (e.target as HTMLElement)?.tagName === 'INPUT';
-      if (typing) {
-        if (e.key === 'Escape' || e.key === 'Enter') (e.target as HTMLElement).blur();
+    const set = (e: KeyboardEvent, on: boolean) => {
+      if ((e.target as HTMLElement)?.tagName === 'INPUT') {
+        if (on && (e.key === 'Escape' || e.key === 'Enter')) (e.target as HTMLElement).blur();
         return;
       }
-      if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser shortcuts alone
-      const i = ['1', '2', '3', '4'].indexOf(e.key);
-      if (i >= 0) pickTool(TOOLS[i]);
-      const step = e.shiftKey ? 40 : 12;
-      const arrows: Record<string, [number, number]> = {
-        ArrowLeft: [-step, 0],
-        ArrowRight: [step, 0],
-        ArrowUp: [0, -step],
-        ArrowDown: [0, step],
-      };
-      if (arrows[e.key]) {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const engine = engineRef.current;
+      if (!engine) return;
+      if (e.code === 'Space') {
         e.preventDefault();
-        engineRef.current?.nudge(...arrows[e.key]);
-      }
+        engine.setPrinting(on);
+      } else if (e.key === 'Shift') engine.setTorch(on);
+      else if (e.key === 'c' || e.key === 'C') engine.setCrumple(on);
+      else if (on && (e.key === 'r' || e.key === 'R')) engine.summon();
     };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [pickTool]);
-
-  const onPointer = (e: React.PointerEvent) => {
-    engineRef.current?.pointerMove(e.clientX, e.clientY, e.pointerType === 'touch');
-  };
+    const down = (e: KeyboardEvent) => set(e, true);
+    const up = (e: KeyboardEvent) => set(e, false);
+    const blur = () => {
+      engineRef.current?.setPrinting(false);
+      engineRef.current?.setTorch(false);
+      engineRef.current?.setCrumple(false);
+    };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+    };
+  }, []);
 
   useEffect(() => {
     const canvas = canvasRef.current!;
@@ -128,33 +118,37 @@ export function App() {
     return () => canvas.removeEventListener('wheel', onWheel);
   }, []);
 
+  useEffect(() => {
+    if (hud.tracking === 'error' && hud.loadingMsg) flash(hud.loadingMsg);
+  }, [hud.tracking, hud.loadingMsg]);
+
+  const useHands = async () => {
+    sound.wake();
+    sound.click();
+    const ok = await engineRef.current?.startCamera();
+    if (ok) flash('Show the camera your open hand.');
+  };
+
+  const useMouse = () => {
+    sound.wake();
+    sound.click();
+    engineRef.current?.useMouse();
+    flash(coarse ? 'Drag the note. Hold the buttons to print or shine UV.' : 'Drag the note. Hold Space to print money.');
+  };
+
+  const toggleCamera = () => {
+    const engine = engineRef.current;
+    if (!engine) return;
+    if (hud.tracking === 'on' || hud.tracking === 'loading') {
+      engine.stopCamera();
+      engine.useMouse();
+    } else void useHands();
+  };
+
   const onName = (v: string) => {
     sound.wake();
     setName(v);
     engineRef.current?.setName(v);
-    setSerial(engineRef.current?.issue.serial ?? '');
-  };
-
-  const toastTimer = useRef(0);
-  const flash = (msg: string) => {
-    setToast(msg);
-    window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
-  };
-
-  const toggleCamera = async () => {
-    const engine = engineRef.current;
-    if (!engine) return;
-    sound.wake();
-    sound.click();
-    if (engine.cameraOn) {
-      engine.stopCamera();
-      setCamera(false);
-      return;
-    }
-    const ok = await engine.startCamera();
-    setCamera(ok);
-    flash(ok ? 'Hold still. You’re being engraved.' : 'No camera, so the dodo sits for you.');
   };
 
   const save = async () => {
@@ -169,7 +163,7 @@ export function App() {
     a.download = `dodo-reserve-${engine.issue.serial.replace(/\s+/g, '')}.png`;
     a.click();
     window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    flash('Printed. Spend it wisely.');
+    flash('Saved. Spend it wisely.');
   };
 
   const toggleSound = () => {
@@ -179,73 +173,133 @@ export function App() {
     setSoundOn(next);
   };
 
-  const copy = COPY[tool];
+  const pointer = (e: React.PointerEvent, down: boolean | null) => {
+    if (e.button === 2 && down !== null) {
+      engineRef.current?.setTorch(down);
+      return;
+    }
+    if (down) sound.wake();
+    engineRef.current?.pointer(e.clientX, e.clientY, down);
+  };
+
+  const intro = hud.mode === 'intro';
+  const camera = hud.mode === 'camera';
+  const legend = camera ? HAND_GESTURES : MOUSE_GESTURES;
+  const active = new Set(hud.poses);
+  const circulation = hud.printed + 1;
+  const inflation = hud.printed * 100;
 
   return (
-    <div className={`app tool-${tool} ${ready ? 'is-ready' : ''}`}>
+    <div className={`app mode-${hud.mode} ${ready ? 'is-ready' : ''} ${active.has('point') ? 'is-uv' : ''}`}>
       <canvas
         ref={canvasRef}
         className="stage"
-        onPointerMove={onPointer}
+        onPointerMove={(e) => pointer(e, null)}
         onPointerDown={(e) => {
-          sound.wake();
-          onPointer(e);
+          (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+          pointer(e, true);
         }}
-        aria-label="A banknote under a lamp. Move the pointer to move the light."
+        onPointerUp={(e) => pointer(e, false)}
+        onPointerCancel={(e) => pointer(e, false)}
+        onPointerLeave={() => engineRef.current?.pointerLeave()}
+        onContextMenu={(e) => e.preventDefault()}
+        onDoubleClick={() => engineRef.current?.summon()}
+        aria-label="A banknote of the Dodo Reserve. Hold it with your hand on camera, or drag it with the pointer."
         role="img"
       />
+      <canvas ref={overlayRef} className="overlay" aria-hidden />
 
       <header className="masthead">
         <div className="wordmark">Specimen</div>
-        <div className="sub mono">The Dodo Reserve · No.&nbsp;001</div>
+        <div className="sub mono">The Dodo Reserve · money you can hold</div>
       </header>
 
-      <section className="label" aria-live="polite">
-        <div key={tool} className="label-inner">
-          <div className="mono label-spec">
-            <span className="led" /> {copy.spec}
-          </div>
-          <p className="label-line">{copy.line}</p>
+      <section className="supply mono" aria-live="polite">
+        <div className="supply-row">
+          <span className="supply-label">In circulation</span>
+          <span className="supply-value">
+            {circulation.toLocaleString()} <span className="supply-unit">DODO</span>
+          </span>
+        </div>
+        <div className={`supply-row inflation ${hud.printed > 0 ? 'is-on' : ''}`}>
+          <span className="supply-label">Inflation</span>
+          <span className="supply-value">{inflation.toLocaleString()}%</span>
         </div>
       </section>
 
-      <div className={`hint mono ${touched ? 'is-transient' : ''}`} key={`hint-${tool}`}>
-        {HINTS[tool][coarse ? 1 : 0]}
-      </div>
+      {intro && ready && (
+        <section className="invite" role="dialog" aria-label="How do you want to hold the money?">
+          <h1 className="invite-title">Money you can hold.</h1>
+          <p className="invite-line">
+            Turn on your camera and the note jumps into your hand. Pinch it, throw it, crumple it, shine a UV torch from your fingertip — and rub your
+            fingers together to print more.
+          </p>
+          <div className="invite-actions">
+            <button className="btn btn-primary" onClick={useHands} autoFocus>
+              <span className="led" /> Use my hands
+            </button>
+            <button className="btn" onClick={useMouse}>
+              Use the {coarse ? 'touchscreen' : 'mouse'}
+            </button>
+          </div>
+          <p className="invite-fine mono">The camera stays on this page. Nothing is recorded or sent.</p>
+        </section>
+      )}
 
-      <footer className="dock">
-        <label className="bearer">
-          <span className="mono bearer-label">Issued to</span>
-          <input
-            value={name}
-            onChange={(e) => onName(e.target.value)}
-            placeholder={DEFAULT_NAME}
-            maxLength={28}
-            spellCheck={false}
-            autoComplete="off"
-            aria-label="Name on the note"
-          />
-          <span className="mono bearer-serial" aria-label="Serial number">
-            {serial}
-          </span>
-        </label>
+      {hud.tracking === 'loading' && <div className="status mono">{hud.loadingMsg}</div>}
 
-        <Tools tool={tool} onPick={pickTool} />
+      {!intro && (
+        <footer className="dock">
+          <label className="bearer">
+            <span className="mono bearer-label">Issued to</span>
+            <input
+              value={name}
+              onChange={(e) => onName(e.target.value)}
+              placeholder={DEFAULT_NAME}
+              maxLength={28}
+              spellCheck={false}
+              autoComplete="off"
+              aria-label="Name on the note"
+            />
+          </label>
 
-        <div className="actions">
-          <button className={`icon-btn ${camera ? 'is-on' : ''}`} onClick={toggleCamera} title="Sit for the portrait (camera)">
-            <IconCamera />
-            <span className="mono">{camera ? 'Dodo' : 'Sit'}</span>
-          </button>
-          <button className="icon-btn" onClick={save} title="Keep this note (PNG)">
-            <IconSave />
-            <span className="mono">Keep</span>
-          </button>
-          <button className="icon-btn" onClick={toggleSound} title={soundOn ? 'Mute' : 'Sound on'} aria-pressed={soundOn}>
-            {soundOn ? <IconSound /> : <IconMute />}
-          </button>
-        </div>
-      </footer>
+          <ol className="legend" aria-label="Gestures">
+            {legend.map((g) => (
+              <li key={g.name} className={`gesture ${active.has(g.pose) ? 'is-active' : ''}`}>
+                <span className="gesture-icon">{g.icon}</span>
+                <span className="gesture-text">
+                  <span className="gesture-name">{g.name}</span>
+                  <span className="gesture-does mono">{g.does}</span>
+                </span>
+              </li>
+            ))}
+          </ol>
+
+          <div className="actions">
+            {coarse && !camera && (
+              <>
+                <HoldButton label="Print" onHold={(on) => engineRef.current?.setPrinting(on)} />
+                <HoldButton label="UV" onHold={(on) => engineRef.current?.setTorch(on)} />
+              </>
+            )}
+            <button
+              className={`icon-btn ${hud.tracking === 'on' ? 'is-on' : ''}`}
+              onClick={toggleCamera}
+              title={hud.tracking === 'on' ? 'Turn the camera off' : 'Use your hands (camera)'}
+            >
+              <IconCamera />
+              <span className="mono">{hud.tracking === 'on' ? (hud.hands ? `${hud.hands} hand${hud.hands > 1 ? 's' : ''}` : 'No hands') : 'Hands'}</span>
+            </button>
+            <button className="icon-btn" onClick={save} title="Save this moment (PNG)">
+              <IconSave />
+              <span className="mono">Keep</span>
+            </button>
+            <button className="icon-btn" onClick={toggleSound} title={soundOn ? 'Mute' : 'Sound on'} aria-pressed={soundOn}>
+              {soundOn ? <IconSound /> : <IconMute />}
+            </button>
+          </div>
+        </footer>
+      )}
 
       {toast && (
         <div className="toast mono" key={toast} role="status">
@@ -261,88 +315,92 @@ export function App() {
   );
 }
 
-function Tools({ tool, onPick }: { tool: Tool; onPick: (t: Tool) => void }) {
-  const refs = useRef<Record<string, HTMLButtonElement | null>>({});
-  const [pill, setPill] = useState({ x: 0, w: 0 });
-
-  // the selection pill slides between tools rather than jumping
-  useLayoutEffect(() => {
-    const measure = () => {
-      const el = refs.current[tool];
-      if (el) setPill({ x: el.offsetLeft, w: el.offsetWidth });
-    };
-    measure();
-    // labels change width once the webfonts land
-    document.fonts?.ready.then(measure);
-    window.addEventListener('resize', measure);
-    return () => window.removeEventListener('resize', measure);
-  }, [tool]);
-
+function HoldButton({ label, onHold }: { label: string; onHold: (on: boolean) => void }) {
   return (
-    <div className="tools" role="radiogroup" aria-label="Inspection light">
-      <span className="tools-pill" style={{ transform: `translateX(${pill.x}px)`, width: pill.w }} />
-      {TOOLS.map((t) => (
-        <button
-          key={t}
-          ref={(el) => {
-            refs.current[t] = el;
-          }}
-          role="radio"
-          aria-checked={tool === t}
-          className={`tool ${tool === t ? 'is-active' : ''}`}
-          onClick={() => onPick(t)}
-        >
-          <ToolIcon tool={t} />
-          <span className="tool-name">{COPY[t].name}</span>
-          <span className="tool-short">{COPY[t].short}</span>
-          <kbd className="mono">{COPY[t].key}</kbd>
-        </button>
-      ))}
-    </div>
+    <button
+      className="icon-btn hold-btn"
+      onPointerDown={(e) => {
+        e.preventDefault();
+        sound.wake();
+        onHold(true);
+      }}
+      onPointerUp={() => onHold(false)}
+      onPointerLeave={() => onHold(false)}
+      onPointerCancel={() => onHold(false)}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <span className="mono">{label}</span>
+    </button>
   );
 }
 
-function ToolIcon({ tool }: { tool: Tool }) {
-  const common = { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true };
-  switch (tool) {
-    case 'lamp':
-      return (
-        <svg {...common}>
-          <path d="M6 9 L12 3 L18 9 Z" />
-          <path d="M12 9 v4" />
-          <path d="M8 16 l-2 4 M12 16 v5 M16 16 l2 4" opacity="0.6" />
-        </svg>
-      );
-    case 'loupe':
-      return (
-        <svg {...common}>
-          <circle cx="10.5" cy="10.5" r="6" />
-          <path d="M15 15 l5 5" />
-          <path d="M8 9 a3 3 0 0 1 3 -2" opacity="0.6" />
-        </svg>
-      );
-    case 'uv':
-      return (
-        <svg {...common}>
-          <rect x="4" y="9" width="16" height="6" rx="3" />
-          <path d="M7 5 l1 2 M12 4 v2.5 M17 5 l-1 2 M7 19 l1 -2 M12 20 v-2.5 M17 19 l-1 -2" opacity="0.7" />
-        </svg>
-      );
-    case 'back':
-      return (
-        <svg {...common}>
-          <rect x="5" y="4" width="14" height="16" rx="1" />
-          <circle cx="12" cy="12" r="3.2" opacity="0.7" />
-        </svg>
-      );
-  }
+// ------------------------------------------------------------------ icons
+// Line drawings of hands, kept as simple as the gestures themselves.
+
+const icon = {
+  width: 22,
+  height: 22,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 1.4,
+  strokeLinecap: 'round' as const,
+  strokeLinejoin: 'round' as const,
+  'aria-hidden': true,
+};
+
+function IconOpen() {
+  return (
+    <svg {...icon}>
+      <path d="M7 13 V6.5 a1.2 1.2 0 0 1 2.4 0 V11 M9.4 11 V4.8 a1.2 1.2 0 0 1 2.4 0 V11 M11.8 11 V5.6 a1.2 1.2 0 0 1 2.4 0 V11.5 M14.2 11.5 V7.6 a1.2 1.2 0 0 1 2.4 0 V14 c0 4 -2.4 6.5 -5.6 6.5 c-2.6 0 -3.9 -1.2 -5.2 -3.4 L4.2 13.6 a1.3 1.3 0 0 1 2.2 -1.3 L7 13" />
+    </svg>
+  );
 }
 
-const icon = { width: 18, height: 18, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 1.5, strokeLinecap: 'round' as const, strokeLinejoin: 'round' as const, 'aria-hidden': true };
+function IconPinch() {
+  return (
+    <svg {...icon}>
+      <path d="M8 20 c-2.4 -2 -3.4 -4.4 -2.6 -7.2 L8.6 8.4 a1.4 1.4 0 0 1 2.4 1.4 L10 12" />
+      <path d="M10 12 L14.6 5.2 a1.4 1.4 0 0 1 2.4 1.5 L13.4 12.2" />
+      <path d="M13.4 12.2 c2 0.6 3.4 2 3.4 4.2 c0 2.2 -1.4 3.6 -3.4 3.6" />
+      <circle cx="15.9" cy="5.9" r="2.6" opacity="0.5" />
+    </svg>
+  );
+}
+
+function IconFist() {
+  return (
+    <svg {...icon}>
+      <path d="M6.5 10 a2 2 0 0 1 2 -2 h7 a2.5 2.5 0 0 1 2.5 2.5 v3.5 c0 3.6 -2.6 6 -6 6 h-1 c-2.6 0 -4.5 -2 -4.5 -4.5 Z" />
+      <path d="M8.5 8 v3 M11 8 v3 M13.5 8 v3 M16 8.3 v2.7" />
+      <path d="M6.5 12.5 h4.5 a1.5 1.5 0 0 1 0 3 h-2" />
+    </svg>
+  );
+}
+
+function IconPoint() {
+  return (
+    <svg {...icon}>
+      <path d="M10 13 V4.4 a1.3 1.3 0 0 1 2.6 0 V12 M12.6 11 h1.6 a1.4 1.4 0 0 1 1.4 1.4 v0.4 M15.6 12.6 a1.3 1.3 0 0 1 2.6 0.4 v2.2 c0 3.2 -2.4 5.3 -5.4 5.3 c-2.4 0 -3.8 -1 -5 -3 L6.2 14.6 a1.3 1.3 0 0 1 2.1 -1.4 L10 15" />
+      <path d="M8 3 l-1.4 -1.2 M14.6 3 l1.4 -1.2 M11.3 1 v-0.4" opacity="0.7" />
+    </svg>
+  );
+}
+
+function IconRub() {
+  return (
+    <svg {...icon}>
+      <path d="M6 20 c-1.6 -2 -2 -4.4 -1 -7 L8 7.6 a1.3 1.3 0 0 1 2.3 1.2 L9 12" />
+      <path d="M9 12 L12.6 4.4 a1.3 1.3 0 0 1 2.4 1 L12.8 10.6 M12.8 10.6 L15.6 6 a1.3 1.3 0 0 1 2.3 1.2 L15 12.4" />
+      <path d="M15 12.4 c1.6 1 2.2 2.6 1.8 4.4 c-0.5 2.2 -2.6 3.4 -5 3.2" />
+      <path d="M18.8 2.6 c1 0.8 1.6 1.9 1.6 3.2 M20.6 1 c1.4 1.2 2.2 2.8 2.2 4.6" opacity="0.7" />
+    </svg>
+  );
+}
 
 function IconCamera() {
   return (
-    <svg {...icon}>
+    <svg {...icon} width={18} height={18}>
       <path d="M4 8 h3 l2 -2.5 h6 l2 2.5 h3 v11 H4 Z" />
       <circle cx="12" cy="13" r="3.5" />
     </svg>
@@ -351,7 +409,7 @@ function IconCamera() {
 
 function IconSave() {
   return (
-    <svg {...icon}>
+    <svg {...icon} width={18} height={18}>
       <path d="M12 4 v11 M7.5 10.5 L12 15 l4.5 -4.5" />
       <path d="M5 19 h14" />
     </svg>
@@ -360,7 +418,7 @@ function IconSave() {
 
 function IconSound() {
   return (
-    <svg {...icon}>
+    <svg {...icon} width={18} height={18}>
       <path d="M5 10 h3 l4 -4 v12 l-4 -4 H5 Z" />
       <path d="M15.5 9.5 a3.5 3.5 0 0 1 0 5 M18 7 a7 7 0 0 1 0 10" />
     </svg>
@@ -369,7 +427,7 @@ function IconSound() {
 
 function IconMute() {
   return (
-    <svg {...icon}>
+    <svg {...icon} width={18} height={18}>
       <path d="M5 10 h3 l4 -4 v12 l-4 -4 H5 Z" />
       <path d="M16 10 l4 4 M20 10 l-4 4" />
     </svg>

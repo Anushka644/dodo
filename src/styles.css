@@ -1,10 +1,10 @@
 :root {
   --bg: #0b0b0a;
   --fg: #ece6d8;
-  --fg-2: rgba(236, 230, 216, 0.6);
-  --fg-3: rgba(236, 230, 216, 0.36);
+  --fg-2: rgba(236, 230, 216, 0.62);
+  --fg-3: rgba(236, 230, 216, 0.38);
   --hair: rgba(236, 230, 216, 0.12);
-  --hair-2: rgba(236, 230, 216, 0.2);
+  --hair-2: rgba(236, 230, 216, 0.22);
   --lime: #c6fe1f;
   --serif: 'IM Fell English', Georgia, serif;
   --sc: 'IM Fell English SC', Georgia, serif;
@@ -57,31 +57,52 @@ button {
 
 /* ------------------------------------------------------------ stage */
 
-.stage {
+.stage,
+.overlay {
   position: fixed;
   inset: 0;
   width: 100%;
   height: 100%;
   display: block;
-  cursor: none; /* the light is the cursor */
+}
+
+.stage {
+  cursor: grab;
   touch-action: none;
 }
 
-/* chrome fades in after the press has run */
+.stage:active {
+  cursor: grabbing;
+}
+
+.overlay {
+  pointer-events: none;
+}
+
+.mode-camera .stage {
+  cursor: default;
+}
+
 .masthead,
-.label,
-.dock,
-.hint {
-  transition: opacity 900ms var(--ease) 1800ms, transform 900ms var(--ease) 1800ms;
+.supply,
+.dock {
+  transition: opacity 900ms var(--ease) 1600ms, transform 900ms var(--ease) 1600ms;
 }
 
 .app:not(.is-ready) .masthead,
-.app:not(.is-ready) .label,
-.app:not(.is-ready) .dock,
-.app:not(.is-ready) .hint {
+.app:not(.is-ready) .supply,
+.app:not(.is-ready) .dock {
   opacity: 0;
   transform: translateY(6px);
   transition: none;
+}
+
+/* under the UV torch the chrome steps back too */
+.is-uv .masthead,
+.is-uv .supply,
+.is-uv .dock {
+  opacity: 0.35;
+  transition: opacity 300ms var(--ease);
 }
 
 /* ------------------------------------------------------------ masthead */
@@ -110,102 +131,174 @@ button {
   color: var(--fg-3);
 }
 
-/* ------------------------------------------------------------ label */
+/* ------------------------------------------------------------ money supply */
 
-.label {
+.supply {
   position: fixed;
   top: 26px;
   right: 32px;
-  width: min(330px, 40vw);
-  text-align: right;
+  display: grid;
+  gap: 6px;
   pointer-events: none;
   user-select: none;
+  text-align: right;
 }
 
-.label-inner {
-  animation: label-in 520ms var(--ease) both;
-}
-
-.label-spec {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
+.supply-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: baseline;
+  gap: 12px;
   font-size: 10.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--fg-2);
 }
 
-.led {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--fg-3);
+.supply-label {
+  color: var(--fg-3);
 }
 
-.tool-uv .led {
-  background: var(--lime);
-  box-shadow: 0 0 8px var(--lime), 0 0 2px var(--lime);
+.supply-value {
+  color: var(--fg);
+  font-size: 13px;
+  min-width: 6ch;
 }
 
-.tool-lamp .led,
-.tool-loupe .led {
-  background: #f3c37a;
-  box-shadow: 0 0 8px rgba(243, 195, 122, 0.8);
+.supply-unit {
+  color: var(--fg-3);
+  font-size: 10.5px;
 }
 
-.tool-back .led {
-  background: #fff3dc;
-  box-shadow: 0 0 8px rgba(255, 243, 220, 0.8);
+.inflation {
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity 400ms var(--ease), transform 400ms var(--ease);
 }
 
-.label-line {
-  margin: 8px 0 0;
+.inflation.is-on {
+  opacity: 1;
+  transform: none;
+}
+
+.inflation .supply-value {
+  color: var(--lime);
+}
+
+/* ------------------------------------------------------------ invitation */
+
+.invite {
+  position: fixed;
+  left: 50%;
+  bottom: 7vh;
+  transform: translateX(-50%);
+  width: min(560px, calc(100vw - 32px));
+  padding: 26px 28px 22px;
+  border: 1px solid var(--hair);
+  border-radius: 18px;
+  background: rgba(14, 14, 12, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  text-align: center;
+  animation: rise 900ms var(--ease) 2200ms both;
+}
+
+.invite-title {
+  margin: 0;
   font-family: var(--serif);
   font-style: italic;
+  font-weight: 400;
+  font-size: 30px;
+  letter-spacing: -0.005em;
+}
+
+.invite-line {
+  margin: 10px auto 0;
+  max-width: 44ch;
+  font-family: var(--serif);
   font-size: 16px;
-  line-height: 1.35;
-  color: var(--fg);
+  line-height: 1.45;
+  color: var(--fg-2);
   text-wrap: balance;
 }
 
-@keyframes label-in {
+.invite-actions {
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 20px;
+  flex-wrap: wrap;
+}
+
+.invite-fine {
+  margin: 14px 0 0;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--fg-3);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 42px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid var(--hair-2);
+  font-family: var(--serif);
+  font-size: 16px;
+  color: var(--fg-2);
+  transition: color 200ms, border-color 200ms, background 200ms, transform 200ms var(--spring);
+}
+
+.btn:hover {
+  color: var(--fg);
+  border-color: rgba(236, 230, 216, 0.4);
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-primary {
+  color: #0b0b0a;
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+.btn-primary:hover {
+  color: #0b0b0a;
+  background: #fff;
+}
+
+.led {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--lime);
+  box-shadow: 0 0 10px var(--lime);
+}
+
+@keyframes rise {
   from {
     opacity: 0;
-    transform: translateY(-4px);
-    filter: blur(3px);
+    transform: translate(-50%, 12px);
   }
 }
 
-/* ------------------------------------------------------------ hint */
-
-.hint {
+.status {
   position: fixed;
   left: 50%;
-  bottom: 92px;
+  top: 28px;
   transform: translateX(-50%);
-  font-size: 10.5px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--fg-3);
-  pointer-events: none;
-  white-space: nowrap;
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  color: var(--fg-2);
+  animation: pulse 1.4s ease-in-out infinite;
 }
 
-.hint.is-transient {
-  animation: hint-life 4.2s var(--ease) forwards;
-}
-
-@keyframes hint-life {
-  0% {
-    opacity: 0;
-  }
-  12%,
-  75% {
-    opacity: 1;
-  }
-  100% {
-    opacity: 0;
+@keyframes pulse {
+  50% {
+    opacity: 0.45;
   }
 }
 
@@ -228,38 +321,30 @@ button {
   pointer-events: auto;
 }
 
-/* bearer: the only text field, styled as the line on a cheque */
 .bearer {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  width: min(280px, 100%);
+  width: min(240px, 100%);
 }
 
-.bearer-label,
-.bearer-serial {
+.bearer-label {
   font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
   color: var(--fg-3);
 }
 
-.bearer-serial {
-  letter-spacing: 0.14em;
-  transition: color 300ms;
-}
-
 .bearer input {
   font-family: var(--serif);
   font-style: italic;
-  font-size: 20px;
+  font-size: 19px;
   color: var(--fg);
   background: none;
   border: 0;
   border-bottom: 1px solid var(--hair-2);
   padding: 2px 0 5px;
   outline: none;
-  transition: border-color 200ms;
   width: 100%;
 }
 
@@ -271,85 +356,68 @@ button {
   border-bottom-color: var(--fg-2);
 }
 
-.bearer:focus-within .bearer-serial {
-  color: var(--fg-2);
-}
-
-/* tools */
-.tools {
-  position: relative;
-  display: inline-flex;
-  padding: 4px;
+/* the gesture legend lights up as your hand does each thing */
+.legend {
+  display: flex;
+  gap: 4px;
+  margin: 0;
+  padding: 5px;
+  list-style: none;
   border: 1px solid var(--hair);
-  border-radius: 999px;
-  background: rgba(20, 19, 17, 0.55);
+  border-radius: 18px;
+  background: rgba(16, 15, 13, 0.55);
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
 }
 
-.tools-pill {
-  position: absolute;
-  top: 4px;
-  bottom: 4px;
-  left: 0;
-  border-radius: 999px;
-  background: rgba(236, 230, 216, 0.09);
-  box-shadow: inset 0 0 0 1px rgba(236, 230, 216, 0.08);
-  transition: transform 420ms var(--spring), width 420ms var(--spring);
-}
-
-.tool {
-  position: relative;
-  display: inline-flex;
+.gesture {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 9px 14px 9px 12px;
-  border-radius: 999px;
-  color: var(--fg-2);
-  font-family: var(--serif);
-  font-size: 15px;
-  transition: color 200ms;
-}
-
-.tool:hover {
-  color: var(--fg);
-}
-
-.tool.is-active {
-  color: var(--fg);
-}
-
-.tool svg {
-  transition: color 200ms, transform 300ms var(--spring);
-}
-
-.tool.is-active svg {
-  color: #f3c37a;
-}
-
-.tool-uv .tool.is-active svg {
-  color: var(--lime);
-  filter: drop-shadow(0 0 4px rgba(198, 254, 31, 0.6));
-}
-
-.tool-back .tool.is-active svg {
-  color: #fff3dc;
-}
-
-.tool:active svg {
-  transform: scale(0.9);
-}
-
-.tool kbd {
-  font-size: 9.5px;
+  gap: 9px;
+  padding: 7px 12px 7px 9px;
+  border-radius: 13px;
   color: var(--fg-3);
-  border: 1px solid var(--hair);
-  border-radius: 4px;
-  padding: 1px 4px;
-  line-height: 1.2;
+  transition: color 160ms, background 160ms;
 }
 
-/* actions */
+.gesture-icon {
+  display: grid;
+  place-items: center;
+  transition: transform 260ms var(--spring), color 160ms;
+}
+
+.gesture-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+}
+
+.gesture-name {
+  font-family: var(--serif);
+  font-size: 14.5px;
+  color: var(--fg-2);
+  transition: color 160ms;
+}
+
+.gesture-does {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.gesture.is-active {
+  background: rgba(198, 254, 31, 0.1);
+  color: var(--lime);
+}
+
+.gesture.is-active .gesture-name {
+  color: var(--fg);
+}
+
+.gesture.is-active .gesture-icon {
+  transform: scale(1.12) rotate(-6deg);
+}
+
 .actions {
   justify-self: end;
   display: flex;
@@ -368,7 +436,10 @@ button {
   font-size: 10.5px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+  white-space: nowrap;
   transition: color 200ms, border-color 200ms, background 200ms;
+  user-select: none;
+  -webkit-user-select: none;
 }
 
 .icon-btn:hover {
@@ -381,8 +452,11 @@ button {
   background: rgba(236, 230, 216, 0.08);
 }
 
-.icon-btn:active {
+.icon-btn:active,
+.hold-btn:active {
   transform: translateY(1px);
+  background: rgba(198, 254, 31, 0.14);
+  color: var(--lime);
 }
 
 /* ------------------------------------------------------------ toast */
@@ -390,7 +464,7 @@ button {
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 92px;
+  bottom: 104px;
   transform: translateX(-50%);
   padding: 9px 14px;
   border-radius: 999px;
@@ -399,7 +473,7 @@ button {
   font-size: 11px;
   letter-spacing: 0.04em;
   color: var(--fg);
-  animation: toast 3.2s var(--ease) forwards;
+  animation: toast 3.4s var(--ease) forwards;
   pointer-events: none;
   white-space: nowrap;
 }
@@ -433,9 +507,18 @@ button {
   color: var(--fg-2);
 }
 
-/* ------------------------------------------------------------ small & tall screens */
+/* ------------------------------------------------------------ small screens */
 
-@media (max-width: 860px), (max-aspect-ratio: 1/1.15) {
+@media (max-width: 1100px) {
+  .gesture-does {
+    display: none;
+  }
+  .gesture {
+    padding: 7px 10px 7px 8px;
+  }
+}
+
+@media (max-width: 860px) {
   .masthead {
     top: 18px;
     left: 18px;
@@ -443,19 +526,15 @@ button {
   .wordmark {
     font-size: 18px;
   }
-  .label {
+  .supply {
     top: 18px;
     right: 18px;
-    width: 52vw;
-  }
-  .label-line {
-    display: none;
   }
   .dock {
     grid-template-columns: 1fr auto;
     grid-template-areas:
       'bearer actions'
-      'tools tools';
+      'legend legend';
     padding: 0 16px max(16px, env(safe-area-inset-bottom));
     gap: 14px;
   }
@@ -465,18 +544,16 @@ button {
   .actions {
     grid-area: actions;
   }
-  .tools {
-    grid-area: tools;
-    display: grid;
-    grid-template-columns: repeat(4, 1fr);
+  .legend {
+    grid-area: legend;
+    justify-content: space-between;
   }
-  .tool {
-    justify-content: center;
-    padding: 10px 6px;
-    font-size: 14px;
-  }
-  .tool kbd {
+  .gesture-text {
     display: none;
+  }
+  .gesture {
+    flex: 1;
+    justify-content: center;
   }
   .icon-btn span {
     display: none;
@@ -486,28 +563,18 @@ button {
     padding: 0;
     justify-content: center;
   }
-  .hint,
+  .hold-btn {
+    width: auto;
+    padding: 0 12px;
+  }
+  .hold-btn span {
+    display: inline;
+  }
   .toast {
     bottom: 150px;
   }
-  .hint {
-    font-size: 9.5px;
-  }
-}
-
-.tool-short {
-  display: none;
-}
-
-@media (max-width: 520px) {
-  .tool-name {
-    display: none;
-  }
-  .tool-short {
-    display: inline;
-  }
-  .tool {
-    gap: 6px;
+  .invite-title {
+    font-size: 25px;
   }
 }
 
