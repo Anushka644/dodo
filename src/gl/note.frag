@@ -125,6 +125,8 @@ float rosette(vec2 p, vec2 c, float R, float A, float k, float N,
               float l6, float l12, float twist, float phase, float wNote, float px) {
   vec2 d = p - c;
   float r = max(length(d), 1e-4);
+  // cheap reject before any trig: the curves never leave this annulus
+  if (abs(r - R) > R * (abs(l6) + abs(l12)) + A * 1.05 + px) return 0.0;
   float th = atan(d.y, d.x);
   vec2 gr = d / r;
   vec2 gth = vec2(-d.y, d.x) / (r * r);

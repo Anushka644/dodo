@@ -86,6 +86,9 @@ export class Engine {
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
+    // GPUs reset; when the context comes back, the simplest correct thing is a fresh start
+    canvas.addEventListener('webglcontextlost', (e) => e.preventDefault());
+    canvas.addEventListener('webglcontextrestored', () => location.reload());
   }
 
   async init() {
@@ -138,7 +141,7 @@ export class Engine {
     const w = window.innerWidth;
     const h = window.innerHeight;
     let s = this.dpr * this.scale;
-    const maxPixels = 2560 * 1600 * 1.4;
+    const maxPixels = 2560 * 1440; // past this, the eye can't tell and the fan can
     if (w * h * s * s > maxPixels) s = Math.sqrt(maxPixels / (w * h));
     this.renderer.resize(Math.round(w * s), Math.round(h * s));
     this.dirty = true;

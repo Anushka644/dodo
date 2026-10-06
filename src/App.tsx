@@ -265,6 +265,8 @@ function Tools({ tool, onPick }: { tool: Tool; onPick: (t: Tool) => void }) {
       if (el) setPill({ x: el.offsetLeft, w: el.offsetWidth });
     };
     measure();
+    // labels change width once the webfonts land
+    document.fonts?.ready.then(measure);
     window.addEventListener('resize', measure);
     return () => window.removeEventListener('resize', measure);
   }, [tool]);
