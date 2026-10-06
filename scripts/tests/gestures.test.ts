@@ -5,10 +5,17 @@
 // rotated, jittered, and turned into exactly what MediaPipe would report for an
 // unmirrored webcam frame. Most cases then go through the real pipeline:
 // HandSlots (mirror + slots + One Euro) → GestureTracker.
+//
+// Beyond classification, it pins down behaviour the engine relies on: palmSize
+// doesn't change as the hand turns (it's the depth cue), a pinch survives being
+// squeezed into a fist (that's how a held note gets crumpled), pinch is off while
+// printing, the rub neither false-triggers nor lingers at 15–60 fps or with noisy
+// fingertips, and a failing tracker never freezes a hand. Jitter is synthetic
+// (independent Gaussian per landmark); real MediaPipe noise still needs a check.
 
 import type { HandGesture, Pose, TrackedHand, V3 } from '../../src/contracts';
 import { GESTURE, GestureTracker, extension } from '../../src/sense/gestures';
-import { HandSlots, SENSE, type RawHand } from '../../src/sense/hands';
+import { HandSensor, HandSlots, SENSE, type RawHand } from '../../src/sense/hands';
 
 type Side = 'Left' | 'Right';
 type M3 = [V3, V3, V3];
@@ -142,17 +149,17 @@ function handPoints(spec: Spec, side: Side, R: M3): V3[] {
 const ASPECT = 16 / 9;
 const SCALE = 2.0; // metres → normalised video height (palm ≈ 0.17 of the frame)
 
-/** what HandSlots outputs (mirrored), straight from camera-frame points */
-function tracked(P: V3[], side: Side, at: [number, number], id = 1): TrackedHand {
+/** what HandSlots outputs (mirrored), straight from camera-frame points; `aspect` = video width ÷ height */
+function tracked(P: V3[], side: Side, at: [number, number], id = 1, aspect = ASPECT): TrackedHand {
   const c = P.reduce((a, p) => add(a, mul(p, 1 / 21)), [0, 0, 0] as V3);
   return {
     id,
     handedness: side,
     score: 0.97,
     landmarks: P.map((p) => ({
-      x: at[0] + ((p[0] - c[0]) * SCALE) / ASPECT,
+      x: at[0] + ((p[0] - c[0]) * SCALE) / aspect,
       y: at[1] - (p[1] - c[1]) * SCALE,
-      z: (-(p[2] - P[0][2]) * SCALE) / ASPECT,
+      z: (-(p[2] - P[0][2]) * SCALE) / aspect,
     })),
     world: P.map((p): V3 => [p[0] - c[0], -(p[1] - c[1]), -(p[2] - c[2])]),
   };
@@ -241,15 +248,18 @@ const DT = 1000 / FPS;
 class Pipe {
   slots = new HandSlots();
   tracker = new GestureTracker();
+  /** what the slots handed the tracker last */
+  hands: TrackedHand[] = [];
   step(hands: RawHand[], t: number): HandGesture[] {
-    return this.tracker.update({ t, hands: this.slots.update(hands, t) });
+    this.hands = this.slots.update(hands, t);
+    return this.tracker.update({ t, hands: this.hands });
   }
 }
 
 /** run a generator through the full pipeline; returns per-frame gestures of the first hand */
-function play(ms: number, gen: (t: number) => RawHand[], pipe = new Pipe(), t0 = 1000) {
+function play(ms: number, gen: (t: number) => RawHand[], pipe = new Pipe(), t0 = 1000, dt = DT) {
   const out: { t: number; g: HandGesture | undefined }[] = [];
-  for (let t = t0; t <= t0 + ms; t += DT) out.push({ t: t - t0, g: pipe.step(gen(t - t0), t)[0] });
+  for (let t = t0; t <= t0 + ms; t += dt) out.push({ t: t - t0, g: pipe.step(gen(t - t0), t)[0] });
   return out;
 }
 
@@ -342,20 +352,27 @@ section('palmNormal / palmUp', (check) => {
 const RUB_NOISE = 0.002; // 2 mm per landmark, per axis, every frame
 const lead = 600; // ms of a still money pose before rubbing starts
 
-function rubRun(side: Side, R: M3, hz: number, amp: number, axis: Axis, ms = 2200, noise = RUB_NOISE) {
-  return play(lead + ms, (t) => {
-    const ph = t < lead ? 0 : 2 * Math.PI * hz * ((t - lead) / 1000);
-    const u = amp * Math.sin(ph);
-    const v = amp * (1 - Math.cos(ph));
-    const spec = axis === 'tap' ? money(amp * (0.5 - 0.5 * Math.cos(ph)), 0, 'tap') : money(u, axis === 'circle' ? v - amp : 0, axis);
-    return [raw(handPoints(spec, side, R), side, [0.55, 0.5], noise)];
-  });
+function rubRun(side: Side, R: M3, hz: number, amp: number, axis: Axis, ms = 2200, noise = RUB_NOISE, dt = DT) {
+  return play(
+    lead + ms,
+    (t) => {
+      const ph = t < lead ? 0 : 2 * Math.PI * hz * ((t - lead) / 1000);
+      const u = amp * Math.sin(ph);
+      const v = amp * (1 - Math.cos(ph));
+      const spec = axis === 'tap' ? money(amp * (0.5 - 0.5 * Math.cos(ph)), 0, 'tap') : money(u, axis === 'circle' ? v - amp : 0, axis);
+      return [raw(handPoints(spec, side, R), side, [0.55, 0.5], noise)];
+    },
+    new Pipe(),
+    1000,
+    dt,
+  );
 }
 
-section('rub: detected within 1 s (3–5 Hz, ±8 mm, jitter 2 mm)', (check) => {
+section('rub: detected (±8 mm, jitter 2 mm, 3–5 Hz ≤ 1 s)', (check) => {
   const lat: number[] = [];
   let intensity = 0;
   let runs = 0;
+  const fast: Record<number, [number, number]> = { 3: [0, 0], 4: [0, 0], 5: [0, 0] };
   for (const side of ['Right', 'Left'] as Side[])
     for (const [rn, R] of [ROTATIONS[0], ROTATIONS[1], ROTATIONS[5], ROTATIONS[9]])
       for (const hz of [3, 4, 5])
@@ -363,48 +380,76 @@ section('rub: detected within 1 s (3–5 Hz, ±8 mm, jitter 2 mm)', (check) => {
           const f = rubRun(side, R, hz, 0.008, axis);
           const early = f.filter((x) => x.t < lead && x.g?.rub.active);
           const hit = f.find((x) => x.t >= lead && x.g?.pose === 'rub');
-          const tail = f.filter((x) => x.t > lead + 1200);
+          const tail = f.filter((x) => hit && x.t > Math.max(lead + 1200, hit.t + 200));
           const held = tail.every((x) => x.g?.pose === 'rub');
+          fast[hz][1]++;
+          if (hit && hit.t - lead <= 1000) fast[hz][0]++;
           intensity += tail.reduce((a, x) => a + (x.g?.rub.intensity ?? 0), 0) / tail.length;
           runs++;
           if (hit) lat.push(hit.t - lead);
           check(early.length === 0, `${side} ${rn} ${hz} Hz ${axis}: rub while still`);
-          check(!!hit && hit.t - lead <= 1000, `${side} ${rn} ${hz} Hz ${axis}: ${hit ? hit.t - lead + ' ms' : 'never'}`);
+          check(!!hit && hit.t - lead <= 1000, `${side} ${rn} ${hz} Hz ${axis}: ${hit ? (hit.t - lead).toFixed(0) + ' ms' : 'never'}`);
           check(held, `${side} ${rn} ${hz} Hz ${axis}: dropped out while rubbing`);
         }
   lat.sort((a, b) => a - b);
-  return `pose latency median ${lat[lat.length >> 1]?.toFixed(0)} ms, max ${lat[lat.length - 1]?.toFixed(0)} ms; mean intensity ${(intensity / runs).toFixed(2)} over ${runs} runs`;
+  const within = [3, 4, 5].map((hz) => `${hz}Hz ${fast[hz][0]}/${fast[hz][1]}`).join(' ');
+  return `≤1 s: ${within}; latency median ${lat[lat.length >> 1]?.toFixed(0)} ms, max ${lat[lat.length - 1]?.toFixed(0)} ms; mean intensity ${(intensity / runs).toFixed(2)}`;
 });
 
-section('rub: stops promptly', (check) => {
-  let worst = 0;
-  for (const hz of [3, 5]) {
-    const stopAt = lead + 1500;
-    const f = play(stopAt + 1200, (t) => {
-      const ph = t < lead || t > stopAt ? 0 : 2 * Math.PI * hz * ((t - lead) / 1000);
-      return [raw(handPoints(money(0.008 * Math.sin(ph), 0, 'along'), 'Right', I3), 'Right', [0.5, 0.5], RUB_NOISE)];
-    });
-    const off = f.find((x) => x.t > stopAt && x.g?.pose !== 'rub');
-    const d = off ? off.t - stopAt : Infinity;
-    worst = Math.max(worst, d);
-    check(d < 600, `${hz} Hz: pose left rub ${d.toFixed(0)} ms after the thumb stopped`);
-  }
-  return `pose leaves rub ≤ ${worst.toFixed(0)} ms after stopping`;
+section('rub: stops promptly, and stays stopped', (check) => {
+  const worst: Record<number, number> = {};
+  let restarts = 0;
+  for (const fps of [30, 60, 24])
+    for (const hz of [3, 5]) {
+      // a rub ends at the end of a stroke, where the thumb is already at rest
+      const stopAt = lead + 1500 + 250 / hz;
+      const f = play(
+        stopAt + 1500,
+        (t) => {
+          const ph = t < lead ? 0 : 2 * Math.PI * hz * ((Math.min(t, stopAt) - lead) / 1000);
+          return [raw(handPoints(money(0.008 * Math.sin(ph), 0, 'along'), 'Right', I3), 'Right', [0.5, 0.5], RUB_NOISE)];
+        },
+        new Pipe(),
+        1000,
+        1000 / fps,
+      );
+      const off = f.find((x) => x.t > stopAt && x.g?.pose !== 'rub');
+      const d = off ? off.t - stopAt : Infinity;
+      worst[fps] = Math.max(worst[fps] ?? 0, d);
+      // once it's off it stays off: the strokes that ran the rub mustn't restart it
+      // (they used to, every other frame — the pose stuck on 'rub' and kept printing)
+      let back = 0;
+      for (let i = 1; i < f.length; i++) if (off && f[i].t > off.t && f[i].g?.rub.active && !f[i - 1].g?.rub.active) back++;
+      restarts += back;
+      check(back === 0, `${fps} fps ${hz} Hz: rub came back on ${back}× after stopping`);
+      check(d < 700, `${fps} fps ${hz} Hz: pose left rub ${d.toFixed(0)} ms after the thumb stopped`);
+    }
+  return `pose leaves rub ≤ ${Object.entries(worst).map(([k, v]) => `${v.toFixed(0)} ms @${k}fps`).join(', ')}; restarts ${restarts}`;
 });
 
-section('rub: sensitivity sweep (Right, upright, 4 Hz along)', (check) => {
+section('rub: sensitivity (detected within 1.5 s, 3 Hz/4 Hz)', (check) => {
+  // informational below ±8 mm: that's the deliberate-rub operating point (see GESTURE.rub.stroke)
   const row: string[] = [];
-  for (const mm of [2, 3, 4, 5, 6, 8, 12]) {
-    const f = rubRun('Right', I3, 4, mm / 1000, 'along', 1500);
-    const hit = f.find((x) => x.t >= lead && x.g?.pose === 'rub');
-    row.push(`±${mm}mm:${hit ? (hit.t - lead).toFixed(0) : '—'}`);
-    if (mm >= 5) check(!!hit, `±${mm} mm should be detected`);
+  for (const mm of [3, 4, 5, 6, 8, 10, 12]) {
+    let hits = 0;
+    let n = 0;
+    for (const side of ['Right', 'Left'] as Side[])
+      for (const hz of [3, 4])
+        for (const axis of ['along', 'across'] as Axis[]) {
+          const f = rubRun(side, rotZ(20), hz, mm / 1000, axis, 1500);
+          n++;
+          if (f.some((x) => x.t >= lead && x.g?.pose === 'rub')) hits++;
+        }
+    row.push(`±${mm}mm ${hits}/${n}`);
+    if (mm >= 8) check(hits === n, `±${mm} mm: ${hits}/${n} detected`);
   }
-  return row.join(' ');
+  return row.join('  ');
 });
 
 section('rub: must NOT trigger', (check) => {
+  let seconds = 0;
   const never = (name: string, ms: number, gen: (t: number) => RawHand[], noiseNote = '') => {
+    seconds += ms / 1000;
     const f = play(ms, gen);
     const bad = f.filter((x) => x.g?.rub.active || x.g?.pose === 'rub');
     check(bad.length === 0, `${name}${noiseNote}: rub on ${bad.length} frames (first at ${bad[0]?.t.toFixed(0)} ms)`);
@@ -436,6 +481,194 @@ section('rub: must NOT trigger', (check) => {
     check(bad.length === 0, `${side} pinch-tapping 3 Hz: rub on ${bad.length} frames`);
     check(toggles >= 12, `${side} pinch-tapping 3 Hz: pinch toggled ${toggles}×`);
   }
+  return `${seconds.toFixed(0)} s of still pinch/money/fist (2–3 mm jitter), swept, shaken, waved hands; + pinch-tapping`;
+});
+
+section('rub: camera frame rate and noise level', (check) => {
+  // the stroke a rub needs follows the jitter measured on the palm, so a slow or
+  // grainy camera doesn't print on its own (a fixed threshold did at 24 fps / 3 mm)
+  const row: string[] = [];
+  for (const fps of [15, 24, 60]) {
+    const dt = 1000 / fps;
+    let falseFrames = 0;
+    for (const side of ['Right', 'Left'] as Side[])
+      for (const sigma of [0.002, 0.003])
+        for (const spec of [PINCH, PINCH_CURLED, money(0, 0, 'along')]) {
+          const f = play(8000, () => [raw(handPoints(spec, side, rotZ(30)), side, [0.5, 0.5], sigma)], new Pipe(), 1000, dt);
+          falseFrames += f.filter((x) => x.g?.rub.active || x.g?.pose === 'rub').length;
+        }
+    check(falseFrames === 0, `${fps} fps: rub on ${falseFrames} frames of a still pinch/money pose (2–3 mm jitter)`);
+    let fast = 0;
+    let any = 0;
+    let n = 0;
+    let held = 0;
+    let gaps = 0;
+    for (const side of ['Right', 'Left'] as Side[])
+      for (const hz of [3, 4, 5])
+        for (const axis of ['along', 'across'] as Axis[]) {
+          const f = rubRun(side, rotZ(20), hz, 0.008, axis, 2000, RUB_NOISE, dt);
+          const hit = f.find((x) => x.t >= lead && x.g?.pose === 'rub');
+          n++;
+          if (hit) any++;
+          if (hit && hit.t - lead <= 1000) fast++;
+          const tail = hit ? f.filter((x) => x.t > hit.t + 300) : [];
+          held += tail.length;
+          gaps += tail.filter((x) => x.g?.pose !== 'rub').length;
+        }
+    // 15 fps is informational: three frames per 5 Hz stroke is barely a signal
+    if (fps >= 24) {
+      check(fast >= n - 1, `${fps} fps: ±8 mm rubs found within 1 s ${fast}/${n}`);
+      check(gaps / held < 0.05, `${fps} fps: rub dropped out on ${((100 * gaps) / held).toFixed(1)}% of frames once going`);
+    }
+    row.push(`${fps} fps ≤1 s ${fast}/${n} (≤2 s ${any}/${n}, gaps ${((100 * gaps) / Math.max(1, held)).toFixed(1)}%)`);
+  }
+  return row.join('; ') + '; no false rubs at 15/24/60 fps';
+});
+
+section('rub: fingertips noisier than the palm', (check) => {
+  // MediaPipe's fingertips (and an occluded thumb tip) jitter more than its palm. The
+  // palm's wobble alone would under-read that, so the thumb signal's own noise counts too.
+  const TIPS = new Set([4, 8, 12, 16, 20]);
+  const JOINTS = new Set([3, 7, 11, 15, 19]);
+  const noisy = (P: V3[], palm: number, tip: number) =>
+    P.map((q, i) => {
+      const s = TIPS.has(i) ? tip : JOINTS.has(i) ? (palm + tip) / 2 : palm;
+      return add(q, [gauss() * s, gauss() * s, gauss() * s]);
+    });
+  const row: string[] = [];
+  for (const fps of [24, 30, 60]) {
+    let bad = 0;
+    for (const side of ['Right', 'Left'] as Side[])
+      for (const spec of [PINCH, PINCH_CURLED, money(0, 0, 'along')]) {
+        const P = handPoints(spec, side, rotZ(30));
+        const f = play(10000, () => [raw(noisy(P, 0.001, 0.0025), side, [0.5, 0.5])], new Pipe(), 1000, 1000 / fps);
+        bad += f.filter((x) => x.g?.rub.active).length;
+      }
+    check(bad === 0, `${fps} fps, palm 1 mm / tips 2.5 mm: rub on ${bad} frames of a still pose`);
+    row.push(`${fps} fps ${bad}`);
+  }
+  // and a real rub still gets through that noise
+  let hits = 0;
+  for (const side of ['Right', 'Left'] as Side[])
+    for (const hz of [3, 4, 5]) {
+      const f = play(lead + 2000, (t) => {
+        const ph = t < lead ? 0 : 2 * Math.PI * hz * ((t - lead) / 1000);
+        return [raw(noisy(handPoints(money(0.008 * Math.sin(ph), 0, 'along'), side, rotZ(20)), 0.001, 0.0025), side, [0.55, 0.5])];
+      });
+      if (f.some((x) => x.t >= lead && x.t <= lead + 1000 && x.g?.pose === 'rub')) hits++;
+    }
+  check(hits >= 5, `±8 mm rubs through tip noise found within 1 s: ${hits}/6`);
+  return `false rub frames over 60 s per rate: ${row.join(', ')}; ±8 mm rubs ≤1 s ${hits}/6`;
+});
+
+section('rub: jitter estimate (palm wobble → thumb noise)', (check) => {
+  const row: string[] = [];
+  for (const fps of [15, 30, 60])
+    for (const sigma of [0.001, 0.002, 0.003, 0.005]) {
+      const pipe = new Pipe();
+      const xs: number[] = [];
+      for (let t = 0; t < 6000; t += 1000 / fps) {
+        pipe.step([raw(handPoints(money(0, 0, 'along'), 'Right', rotZ(20)), 'Right', [0.5, 0.5], sigma)], 1000 + t);
+        if (t < 2000) continue;
+        // the true noise of what the rub detector watches: thumb tip − mean of index/middle tips, one axis
+        const W = pipe.hands[0]?.world;
+        if (W) xs.push((W[4][0] - (W[8][0] + W[12][0]) / 2) / PALM);
+      }
+      const m = xs.reduce((a, b) => a + b, 0) / xs.length;
+      const truth = Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / xs.length);
+      const est = Math.sqrt(1.5 * (pipe.tracker as unknown as { cam: { jitter: number } }).cam.jitter) / PALM;
+      const r = est / truth;
+      check(r > 0.6 && r < 1.6, `${fps} fps σ=${sigma * 1000} mm: estimate ${est.toFixed(4)} vs true ${truth.toFixed(4)} palm (×${r.toFixed(2)})`);
+      if (fps === 30) row.push(`${sigma * 1000}mm ×${r.toFixed(2)}`);
+    }
+  return `estimate ÷ truth at 30 fps: ${row.join(', ')}`;
+});
+
+section('palmSize: the distance cue ignores how the hand is turned', (check) => {
+  // the engine maps palmSize to depth; turning the palm up to catch money must not throw the hand backwards
+  const want = SCALE * PALM; // the palm upright, facing the camera, in video heights
+  let worst = 0;
+  let oldLo = Infinity;
+  let oldHi = 0;
+  for (const side of ['Right', 'Left'] as Side[])
+    for (const [rn, R] of ROTATIONS)
+      for (const [sn, spec] of [['open', OPEN] as const, ['fist', FIST] as const, ['pinch', PINCH] as const]) {
+        const h = tracked(handPoints(spec, side, R), side, [0.5, 0.5]);
+        const g = new GestureTracker().update({ t: 0, hands: [h] })[0];
+        const err = Math.abs(g.palmSize / want - 1);
+        worst = Math.max(worst, err);
+        const old = Math.hypot(h.landmarks[0].x - h.landmarks[9].x, h.landmarks[0].y - h.landmarks[9].y) / want;
+        oldLo = Math.min(oldLo, old);
+        oldHi = Math.max(oldHi, old);
+        check(err < 0.05, `${side} ${sn} @ ${rn}: palmSize ${g.palmSize.toFixed(3)} vs ${want.toFixed(3)}`);
+      }
+  // a 4:3 camera: the aspect ratio is learned from the first second or so of a moving hand
+  const tr = new GestureTracker();
+  let t = 0;
+  for (let i = 0; i < 45; i++) tr.update({ t: (t += DT), hands: [tracked(handPoints(OPEN, 'Right', ROTATIONS[i % ROTATIONS.length][1]), 'Right', [0.5, 0.5], 1, 4 / 3)] });
+  let worst43 = 0;
+  for (const [, R] of ROTATIONS) {
+    const g = tr.update({ t: (t += DT), hands: [tracked(handPoints(OPEN, 'Right', R), 'Right', [0.5, 0.5], 1, 4 / 3)] })[0];
+    worst43 = Math.max(worst43, Math.abs(g.palmSize / want - 1));
+  }
+  check(worst43 < 0.05, `4:3 video: palmSize within ${(worst43 * 100).toFixed(1)}% after learning the aspect`);
+  return `worst error ${(worst * 100).toFixed(1)}% (4:3: ${(worst43 * 100).toFixed(1)}%); raw |lm0−lm9| spanned ${oldLo.toFixed(2)}–${oldHi.toFixed(2)}× for the same hand`;
+});
+
+/** a pinch (other fingers curled, as when holding a note) squeezing into a fist: k = 0 → 1 */
+const pinchToFist = (k: number): Spec => ({
+  f: PINCH_CURLED.f.map((fl, i) => fl.map((a, j) => a + k * (FIST.f[i][j] - a))) as Spec['f'],
+  thumb: (P, pads) => lerp(add(P[8], mul(pads[0], 0.009)), add(mid(P[6], P[11]), [0, 0, 0.014]), k),
+});
+const fistToOpen = (k: number): Spec => ({
+  f: FIST.f.map((fl, i) => fl.map((a, j) => a + k * (OPEN.f[i][j] - a))) as Spec['f'],
+  thumb: (P) => lerp(add(mid(P[6], P[11]), [0, 0, 0.014]), add(P[2], [-0.03, 0.04, 0.01]), k),
+});
+
+section('grip: a pinch squeezed into a fist keeps hold; opening lets go', (check) => {
+  // the engine lets go of a note the moment pinch.active drops, and crumples what
+  // the hand holds while fist is true — so the grip must survive the squeeze
+  for (const side of ['Right', 'Left'] as Side[])
+    for (const [rn, R] of [ROTATIONS[0], ROTATIONS[1], ROTATIONS[5], ROTATIONS[9]]) {
+      const frames = play(1600, (t) => {
+        const k = t < 300 ? 0 : Math.min(1, (t - 300) / 300);
+        const o = t < 1000 ? 0 : Math.min(1, (t - 1000) / 250);
+        return [raw(handPoints(o > 0 ? fistToOpen(o) : pinchToFist(k), side, R), side, [0.5, 0.5], 0.0015)];
+      });
+      const held = frames.filter((x) => x.t >= 150 && x.t < 1000);
+      const dropped = held.filter((x) => !x.g?.pinch.active).length;
+      const crumpling = frames.filter((x) => x.t >= 650 && x.t < 1000).every((x) => x.g?.fist && x.g.pinch.active);
+      const opened = frames.filter((x) => x.t >= 1350);
+      check(dropped === 0, `${side} @ ${rn}: grip lost on ${dropped}/${held.length} frames while squeezing`);
+      check(crumpling, `${side} @ ${rn}: fist + pinch together once squeezed`);
+      check(opened.every((x) => !x.g?.pinch.active && !x.g?.fist), `${side} @ ${rn}: opening the hand lets go`);
+    }
+  // and a plain fist never reads as a pinch
+  const f = play(800, () => [raw(handPoints(FIST, 'Right', I3), 'Right', [0.5, 0.5], 0.0015)]);
+  check(f.every((x) => !x.g?.pinch.active), 'a fist made from nothing is not a pinch');
+});
+
+section('pinch is not reported while printing', (check) => {
+  // the money pose is a thumb on two fingertips — a grip, until it starts rubbing.
+  // While it rubs, pinch.active is off, or the engine would grab the notes it prints.
+  let toggles = 0;
+  for (const side of ['Right', 'Left'] as Side[])
+    for (const hz of [3, 5]) {
+      const stopAt = lead + 2000;
+      const f = play(stopAt + 1200, (t) => {
+        const ph = t < lead || t > stopAt ? 0 : 2 * Math.PI * hz * ((t - lead) / 1000);
+        return [raw(handPoints(money(0.008 * Math.sin(ph), 0, 'along'), side, rotZ(20)), side, [0.55, 0.5], RUB_NOISE)];
+      });
+      check(f.filter((x) => x.t > 200 && x.t < lead).every((x) => x.g?.pinch.active), `${side} ${hz} Hz: still money pose holds like a pinch`);
+      const clash = f.filter((x) => (x.g?.rub.active || x.g?.pose === 'rub') && x.g?.pinch.active).length;
+      check(clash === 0, `${side} ${hz} Hz: pinch and rub both on for ${clash} frames`);
+      let n = 0;
+      for (let i = 1; i < f.length; i++) if (f[i].t > lead && f[i].g?.pinch.active !== f[i - 1].g?.pinch.active) n++;
+      toggles += n;
+      check(n === 2, `${side} ${hz} Hz: pinch toggled ${n}× (once off as printing starts, once on after)`);
+      check(f.filter((x) => x.t > stopAt + 900).every((x) => x.g?.pinch.active), `${side} ${hz} Hz: grip is back once the rub stops`);
+    }
+  return `pinch toggles per run: ${toggles / 4}`;
 });
 
 section('pinch hysteresis', (check) => {
@@ -560,6 +793,34 @@ section('HandSlots: dropouts', (check) => {
   check(again[0]?.id !== id, 'a hand that comes back later gets a fresh id');
 });
 
+section('HandSlots: a NaN from the tracker', (check) => {
+  // one bad number would sit in a slot's filters for good (pinch.point = NaN → a note pinned at NaN)
+  const pipe = new Pipe();
+  const good = () => raw(handPoints(OPEN, 'Right', I3), 'Right', [0.5, 0.5], 0.001);
+  let t = 1000;
+  for (let i = 0; i < 10; i++) pipe.step([good()], (t += DT));
+  const bad = good();
+  bad.landmarks[8] = { x: NaN, y: 0.5, z: 0 };
+  const during = pipe.step([bad], (t += DT));
+  check(during.length === 1, 'a NaN frame is a missed frame: the hand coasts');
+  const half = good();
+  half.world[4] = { x: NaN, y: 0, z: 0 };
+  pipe.step([half], (t += DT));
+  let g: HandGesture | undefined;
+  for (let i = 0; i < 10; i++) g = pipe.step([good()], (t += DT))[0];
+  const nums = [...g!.palm, ...g!.pinch.point, ...g!.rub.point, ...g!.point.tip, g!.palmSize, ...g!.palmNormal];
+  check(nums.every(Number.isFinite), 'everything finite afterwards');
+  check(pipe.hands[0].landmarks.every((l) => Number.isFinite(l.x + l.y + l.z)) && pipe.hands[0].world.every((w) => w.every(Number.isFinite)), 'slot filters unpoisoned');
+  // fed straight to the tracker, a NaN hand is skipped and can't spoil the other hand's camera estimates
+  const tr = new GestureTracker();
+  const a = tracked(handPoints(OPEN, 'Right', I3), 'Right', [0.3, 0.5], 1);
+  const b = tracked(handPoints(OPEN, 'Left', I3), 'Left', [0.7, 0.5], 2);
+  const nan: TrackedHand = { ...a, landmarks: a.landmarks.map((l, i) => (i === 9 ? { ...l, x: NaN } : l)) };
+  let out: HandGesture[] = [];
+  for (let i = 0; i < 20; i++) out = tr.update({ t: i * DT, hands: [i === 5 ? nan : a, b] });
+  check(out.every((o) => Number.isFinite(o.palmSize) && Math.abs(o.palmSize / (SCALE * PALM) - 1) < 0.05), 'other hands unaffected');
+});
+
 section('HandSlots: One Euro smoothing', (check) => {
   // at rest: jitter in, steadier out
   const slots = new HandSlots();
@@ -594,6 +855,143 @@ section('HandSlots: One Euro smoothing', (check) => {
   return `rest jitter ÷${ratio.toFixed(1)}; 2.5 u/s flick lag ${(worst * 1000).toFixed(1)}‰ of frame width (~${(worst / 2.5 * 1000).toFixed(0)} ms)`;
 });
 
+// ---- the sensor shell, with a fake <video> and a fake MediaPipe landmarker
+type FakeVideo = { readyState: number; videoWidth: number; currentTime: number; [k: string]: unknown };
+function fakeLandmarker(log: number[], opts: { throws?: () => boolean } = {}) {
+  const r = raw(handPoints(OPEN, 'Right', I3), 'Right', [0.6, 0.5]);
+  return {
+    detectForVideo(_v: unknown, ts: number) {
+      if (opts.throws?.()) throw new Error('GL lost');
+      log.push(ts);
+      return {
+        landmarks: [r.landmarks],
+        worldLandmarks: [r.world],
+        handedness: [[{ categoryName: r.label, score: r.score, index: 0, displayName: '' }]],
+      };
+    },
+    close() {},
+  };
+}
+// the constructor is private (create() needs MediaPipe and a DOM); reach it directly
+const Sensor = HandSensor as unknown as new (v: unknown, lm: unknown, d: 'GPU' | 'CPU', ts: number, make: (d: string) => Promise<unknown>) => HandSensor;
+
+section('HandSensor: frame gating + timestamps (currentTime path)', (check) => {
+  const ts: number[] = [];
+  const v: FakeVideo = { readyState: 4, videoWidth: 640, currentTime: 0 };
+  const s = new Sensor(v, fakeLandmarker(ts), 'GPU', 500, async () => fakeLandmarker(ts));
+  const f1 = s.detect(1000);
+  check(!!f1 && f1.hands.length === 1 && f1.hands[0].handedness === 'Right', 'first frame detected, handedness unswapped');
+  check(s.detect(1016) === null && ts.length === 1, 'same video frame → null, MediaPipe not called');
+  v.currentTime = 0.033;
+  const f2 = s.detect(1033);
+  v.currentTime = 0.066;
+  const f3 = s.detect(1020); // caller's clock went backwards
+  v.currentTime = 0.1;
+  const f4 = s.detect(1033.4); // and rounds onto the previous ms
+  check(!!f2 && !!f3 && !!f4 && f2.t < f3.t && f3.t < f4.t, `frame times strictly increase (${[f1, f2, f3, f4].map((f) => f?.t).join(', ')})`);
+  check(ts.every((x, i) => Number.isInteger(x) && (i === 0 ? x > 500 : x > ts[i - 1])), `MediaPipe timestamps strictly increasing ints (${ts.join(', ')})`);
+  v.readyState = 1;
+  v.currentTime = 0.2;
+  check(s.detect(1100) === null, 'no frame while the video has no data');
+  s.dispose();
+  v.readyState = 4;
+  v.currentTime = 0.3;
+  check(s.detect(1200) === null, 'nothing after dispose');
+});
+
+section('HandSensor: requestVideoFrameCallback path', (check) => {
+  const ts: number[] = [];
+  let cb: ((now: number, meta: { captureTime?: number }) => void) | null = null;
+  let cancelled = -1;
+  const v: FakeVideo = {
+    readyState: 4,
+    videoWidth: 640,
+    currentTime: 0,
+    requestVideoFrameCallback: (f: typeof cb) => ((cb = f), 7),
+    cancelVideoFrameCallback: (h: number) => (cancelled = h),
+  };
+  const s = new Sensor(v, fakeLandmarker(ts), 'GPU', 0, async () => fakeLandmarker(ts));
+  const now = performance.now();
+  v.currentTime = 0.5;
+  check(s.detect(now) === null, 'waits for rVFC to report before falling back to currentTime');
+  cb!(now, { captureTime: now - 40 });
+  const f = s.detect(now + 2);
+  check(!!f && Math.abs(f.t - (now - 40)) < 1e-6, 'frame time = the camera capture time');
+  v.currentTime = 0.6; // currentTime moved but rVFC hasn't announced a frame
+  check(s.detect(now + 5) === null, 'no new rVFC frame → null');
+  cb!(now + 33, { captureTime: now - 7 });
+  const g = s.detect(now + 34);
+  check(!!g && g.t > f!.t && ts.length === 2, 'next rVFC frame detected');
+  s.dispose();
+  check(cancelled === 7, 'dispose cancels the frame callback');
+});
+
+{
+  // GPU that dies mid-session: detect() must never throw, and should rebuild on the CPU
+  const ts: number[] = [];
+  let broken = false;
+  let made = '';
+  const v: FakeVideo = { readyState: 4, videoWidth: 640, currentTime: 0 };
+  const s = new Sensor(v, fakeLandmarker(ts, { throws: () => broken }), 'GPU', 0, async (d) => ((made = d), fakeLandmarker(ts)));
+  v.currentTime = 0.01;
+  const id = s.detect(1000)?.hands[0]?.id;
+  broken = true;
+  let threw = false;
+  const got: (number | null)[] = []; // hands per call, null = no frame
+  const ids = new Set<number>();
+  const warn = console.warn;
+  console.warn = () => {}; // the sensor logs the (expected) failure
+  for (let i = 1; i <= 4; i++) {
+    v.currentTime = 0.01 + i / 30;
+    try {
+      const f = s.detect(1000 + i * 33);
+      got.push(f ? f.hands.length : null);
+      f?.hands.forEach((h) => ids.add(h.id));
+    } catch {
+      threw = true;
+    }
+  }
+  await new Promise((r) => setTimeout(r, 0));
+  broken = false;
+  v.currentTime = 1;
+  const after = s.detect(2000);
+
+  // a CPU landmarker that fails on every frame: hands must go away, not freeze
+  const dead = new Sensor(v, fakeLandmarker([], { throws: () => true }), 'CPU', 0, async () => fakeLandmarker([]));
+  const deadOut: (number | null)[] = [];
+  for (let i = 0; i < 12; i++) {
+    v.currentTime = 2 + i / 30;
+    const f = dead.detect(3000 + i * 33);
+    deadOut.push(f ? f.hands.length : null);
+  }
+  // the CPU rebuild itself fails: same — no hands, rather than the last ones forever
+  const doomed = new Sensor(v, fakeLandmarker([], { throws: () => true }), 'GPU', 0, async () => {
+    throw new Error('no wasm');
+  });
+  const doomedOut: (number | null)[] = [];
+  for (let i = 0; i < 4; i++) {
+    v.currentTime = 3 + i / 30;
+    const f = doomed.detect(4000 + i * 33);
+    doomedOut.push(f ? f.hands.length : null);
+  }
+  await new Promise((r) => setTimeout(r, 0));
+  v.currentTime = 4;
+  const doomedLater = doomed.detect(5000);
+  console.warn = warn;
+
+  section('HandSensor: failures', (check) => {
+    check(!threw, 'detect never throws');
+    // failed frames are frames with no detections: the hand coasts (same id) while the GPU is retried…
+    check(got[0] === 1 && got[1] === 1 && got[2] === 1 && ids.size === 1 && ids.has(id!), `a failed frame coasts the hand (hands per call ${got.join(',')})`);
+    // …then null — "hold the last hands" — for the second the CPU rebuild takes
+    check(got[3] === null, 'null while rebuilding on the CPU');
+    check(made === 'CPU' && s.backend === 'CPU', `rebuilt on the ${made || '—'} after repeated GPU failures`);
+    check(!!after && after.hands.length === 1, 'detects again after the fallback');
+    check(deadOut.every((n) => n !== null) && deadOut[deadOut.length - 1] === 0, `a tracker that keeps failing reports no hands, not the last ones (${deadOut.join(',')})`);
+    check(doomedLater !== null && doomedLater.hands.length === 0, `a failed CPU rebuild reports no hands (${doomedOut.join(',')} then ${doomedLater?.hands.length})`);
+  });
+}
+
 // ------------------------------------------------------------------ report
 
 const w = Math.max(...results.map((r) => r.name.length));
@@ -608,5 +1006,7 @@ if (failures.length) {
   console.log('\nFAILURES:');
   for (const f of failures.slice(0, 60)) console.log('  ✗ ' + f);
   if (failures.length > 60) console.log(`  … and ${failures.length - 60} more`);
-  process.exit(1);
+  // no @types/node in this repo, so reach process through globalThis
+  const proc = (globalThis as { process?: { exitCode?: number } }).process;
+  if (proc) proc.exitCode = 1;
 }

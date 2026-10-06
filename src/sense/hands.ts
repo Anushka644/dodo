@@ -7,6 +7,19 @@
 // mirror). MediaPipe's labels assume a mirrored input image; we hand it the raw
 // camera frame, so its labels come out swapped and are swapped back here.
 //
+// FRAME TIME — `HandsFrame.t` is when the camera captured the frame (rVFC
+// captureTime) when the browser reports it, otherwise when we first saw the
+// frame. Same clock as performance.now(), strictly increasing, may trail `now`
+// by the camera's latency (~30–80 ms).
+//
+// DROPOUTS — a hand MediaPipe loses for ≤ SENSE.coastMs keeps its id and glides
+// on its last velocity, reported with half its score; after that it's gone.
+// detect() returns null (not a frame) while there's no new video frame, and for
+// the second or so it takes to rebuild on the CPU if the GPU path dies. A frame
+// MediaPipe fails on counts as a frame with no hands (they coast, then go), so
+// a tracker that dies for good never leaves a hand frozen mid-pinch; a detection
+// with a non-finite number in it is a miss too (it would poison the filters).
+//
 // MediaPipe is imported dynamically: its ~1 MB bundle only loads when the
 // camera starts, and this module stays importable from Node for tests.
 
@@ -22,6 +35,9 @@ export const SENSE = {
    * with little lag or loss. Video landmarks are in normalised units, world in metres.
    */
   image: { minCutoff: 1.4, beta: 20 },
+  // World landmarks feed the gesture shapes and the rub. A higher beta (≈ 90)
+  // finds fast 5 Hz rubs sooner, but passes jitter in bursts the rub's noise
+  // estimate can't keep up with: still poses started printing on a noisy camera.
   world: { minCutoff: 1.4, beta: 50 },
   /** a lost hand keeps gliding on its last velocity this long before it's dropped */
   coastMs: 120,
@@ -111,7 +127,12 @@ export class HandSensor implements HandSensorApi {
       onProgress?.('Starting on the CPU…');
       delegate = 'CPU';
       lm = await make('CPU');
-      warm(lm, ++ts);
+      try {
+        warm(lm, ++ts);
+      } catch (err) {
+        lm.close();
+        throw err;
+      }
     }
     onProgress?.('Ready');
     return new HandSensor(video, lm, delegate, ts, make);
@@ -124,7 +145,7 @@ export class HandSensor implements HandSensorApi {
 
   detect(nowMs: number): HandsFrame | null {
     const v = this.video;
-    if (!this.lm || this.disposed || v.readyState < 2 || !v.videoWidth) return null;
+    if (this.disposed || v.readyState < 2 || !v.videoWidth) return null;
     let t = nowMs;
     if (nowMs - this.rvfcAt < 500) {
       // requestVideoFrameCallback is alive: it says exactly when a frame arrived
@@ -142,13 +163,15 @@ export class HandSensor implements HandSensorApi {
     const ts = Math.max(this.lastTs + 1, Math.round(t));
     this.lastTs = ts;
 
+    // rebuilding on the CPU: hold the last hands (it takes a second). Failed for good: no hands.
+    if (!this.lm) return this.rebuilding ? null : { t, hands: this.slots.update([], t) };
     let res: HandLandmarkerResult;
     try {
       res = this.lm.detectForVideo(v, ts);
       this.failures = 0;
     } catch (e) {
       this.fail(e);
-      return null;
+      return { t, hands: this.slots.update([], t) };
     }
     try {
       const raw: RawHand[] = res.landmarks.map((lms, i) => ({
@@ -267,7 +290,8 @@ export class HandSlots {
   }
 
   update(raw: RawHand[], t: number): TrackedHand[] {
-    const dets = dedupe(raw.filter((h) => h.landmarks.length === 21).map(detection));
+    // a non-finite number would poison a slot's filters for good: such a frame is a miss
+    const dets = dedupe(raw.filter((h) => h.landmarks.length === 21 && h.landmarks.every(finite)).map(detection));
 
     // cheapest consistent assignment of detections to slots (n ≤ 2, so brute force)
     const S = this.slots;
@@ -362,7 +386,7 @@ function detection(h: RawHand): Det {
   const lm: number[] = [];
   for (const p of h.landmarks) lm.push(1 - p.x, p.y, p.z);
   const world: number[] = [];
-  if (h.world.length === 21) for (const p of h.world) world.push(-p.x, p.y, p.z);
+  if (h.world.length === 21 && h.world.every(finite)) for (const p of h.world) world.push(-p.x, p.y, p.z);
   let cx = 0;
   let cy = 0;
   for (const i of [0, 5, 9, 13, 17]) {
@@ -405,6 +429,8 @@ function assign(cost: number[][], nSlots: number, max: number): number[] {
   rec(0, 0);
   return out;
 }
+
+const finite = (p: P3) => Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z);
 
 function palmOf(l: Landmark[]): [number, number] {
   let x = 0;
