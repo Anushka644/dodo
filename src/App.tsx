@@ -95,6 +95,7 @@ export function App() {
         if (e.key === 'Escape' || e.key === 'Enter') (e.target as HTMLElement).blur();
         return;
       }
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // leave browser shortcuts alone
       const i = ['1', '2', '3', '4'].indexOf(e.key);
       if (i >= 0) pickTool(TOOLS[i]);
       const step = e.shiftKey ? 40 : 12;
@@ -134,9 +135,11 @@ export function App() {
     setSerial(engineRef.current?.issue.serial ?? '');
   };
 
+  const toastTimer = useRef(0);
   const flash = (msg: string) => {
     setToast(msg);
-    window.setTimeout(() => setToast(null), 3200);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3200);
   };
 
   const toggleCamera = async () => {
@@ -244,7 +247,11 @@ export function App() {
         </div>
       </footer>
 
-      {toast && <div className="toast mono">{toast}</div>}
+      {toast && (
+        <div className="toast mono" key={toast} role="status">
+          {toast}
+        </div>
+      )}
       {failed && (
         <div className="fallback">
           <p>This toy needs WebGL2, which this browser doesn&rsquo;t offer. Try a recent Chrome, Safari or Firefox.</p>

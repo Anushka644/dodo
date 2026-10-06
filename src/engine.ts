@@ -51,6 +51,8 @@ export class Engine {
 
   // flicker & ceremony
   private lampOn = 0;
+  private lampBase = 0;
+  private lampWait = 0;
   private uvOn = 0;
   private uvSwitchAt = -1;
   private print = 0;
@@ -106,6 +108,7 @@ export class Engine {
     if (this.reducedMotion || new URLSearchParams(location.search).has('still')) {
       this.print = 1;
       this.lampOn = 1;
+      this.lampBase = 1;
     }
     if (import.meta.env.DEV) (window as unknown as { engine: Engine }).engine = this;
     this.loop();
@@ -323,16 +326,24 @@ export class Engine {
       animating = true;
       if (this.print >= 1) {
         this.printing = false;
+        this.lampWait = 0.35; // work light off, a beat of dark…
         sound.press();
       }
     }
-    if (this.print >= 0.98 && this.lampOn < 1) {
-      this.lampOn = Math.min(1, this.lampOn + dt * 2.2);
-      if (!this.reducedMotion && this.lampOn < 0.6) this.lampOn *= 0.85 + 0.3 * Math.random();
-      animating = true;
-    } else if (this.print < 0.98) {
+    if (this.print < 1) {
       // a dim work light while the note is printed
       this.lampOn = 0.55 * Math.min(1, this.print * 3);
+    } else if (this.lampBase < 1) {
+      // …then the lamp stutters on, like they do
+      if (this.lampWait > 0) {
+        this.lampWait -= dt;
+        this.lampOn = 0;
+      } else {
+        this.lampBase = Math.min(1, this.lampBase + dt * 1.8);
+        const stutter = this.reducedMotion || this.lampBase > 0.75 ? 1 : Math.random() < 0.4 ? 0.12 : 1;
+        this.lampOn = this.lampBase * stutter;
+      }
+      animating = true;
     }
 
     // where the lamp wants to be
@@ -374,7 +385,8 @@ export class Engine {
     // a UV tube never just turns on
     if (this.tool === 'uv') {
       const e = (now - this.uvSwitchAt) / 1000;
-      if (this.reducedMotion || e > 0.62) this.uvOn = 0.97 + 0.03 * Math.sin(now * 0.63);
+      if (this.reducedMotion) this.uvOn = 1;
+      else if (e > 0.62) this.uvOn = 0.97 + 0.03 * Math.sin(now * 0.63);
       else {
         const seq = [[0.05, 0.7], [0.11, 0.05], [0.16, 0.9], [0.24, 0.15], [0.3, 0.55], [0.38, 0.1], [0.46, 1]];
         let v = 0;
@@ -382,7 +394,7 @@ export class Engine {
         this.uvOn = v;
         if (Math.random() < 0.15) sound.crackle();
       }
-      animating = true;
+      if (!this.reducedMotion) animating = true;
     }
 
     // loupe: springs open, folds away
