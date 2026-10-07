@@ -35,7 +35,7 @@ history, with a caption of what's on the island.
 | **Drag the sky** | move the sun; below the horizon is night |
 | **Right-drag**, arrows · **scroll** · **double-click** | turn · zoom · fly to a spot |
 | **Click a dodo** | say hello |
-| **1–5** · **P** · **[ ]** | inks · dither pattern · dot size |
+| **1–5** · **P** · **[ ]** | inks · print pattern · dot size |
 | **H** | back home |
 
 On a touchscreen: one finger sculpts, two fingers turn and zoom.
@@ -64,11 +64,15 @@ of TypeScript and GLSL.
   smoke, and seabirds projected into screen space and drawn as inked "M"s. It
   renders at print resolution, one texel per dot, and outputs no colour: only
   tone, depth, material and a glow mask.
-- **The print is a second pass.** It inks that tone through an ordered
-  dither (Bayer, blue noise, a 45° halftone or engraving lines) with key and
-  paper shared and the middle inks chosen per material, the way a risograph run
-  uses a different spot colour for each plate. Contour lines go wherever depth
-  jumps. The "Day" palette follows the sun from dawn through dusk to night.
+- **The print is a second pass.** Each material (sea, sand, rock, forest,
+  dodo, sky, smoke) prints from its own six-ink ramp, from key to paper,
+  like a risograph run with a separate drum for each spot colour. Areas print
+  as flat ink. Only the transition between two neighbouring inks is screened,
+  with round halftone dots drawn at full screen resolution and each material
+  at its own screen angle, so gradients turn into tidy dot bands instead of
+  noise. Key black is kept for contours, birds and eyes. A faint paper tooth
+  and uneven ink density finish it. The "Day" palette follows the sun from
+  dawn through dusk to night. **P** cycles halftone, grain, Bayer and lines.
 - **The land is simulated on the CPU** in a 256² heightmap, then mirrored
   into an RGBA16F texture (height, vegetation, lava heat, water):
   - *Drainage* is a priority-flood from the coast, so every river reaches the
@@ -114,7 +118,9 @@ npm run dev        # http://localhost:5173
 npm run build      # static site in dist/
 ```
 
-Add `?still` to skip the intro, or `?px=4` for bigger dots.
+Add `?still` to skip the intro, or `?px=3` for bigger dots. Dots default to
+2 CSS px; if frames run long for a few seconds on a slow GPU, it steps up to
+3 by itself.
 
 Deploys as a static site: push to `main` and the included GitHub Pages
 workflow publishes `dist/`, or import the repo into Vercel or Netlify (build

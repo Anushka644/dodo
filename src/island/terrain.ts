@@ -132,7 +132,8 @@ export class Terrain {
       for (let i = 0; i < N; i++) {
         const [x, z] = this.toWorld(i, j);
         this.h[j * N + i] = seabed(x, z);
-        this.wander[j * N + i] = (fbm(x * 1.6 + 11.3, z * 1.6 - 4.1) - 0.5) * 0.05;
+        // broad bends, and smaller wiggles within them
+        this.wander[j * N + i] = (fbm(x * 1.6 + 11.3, z * 1.6 - 4.1) - 0.5) * 0.05 + (fbm(x * 5.2 - 2.7, z * 5.2 + 8.9) - 0.5) * 0.025;
       }
     }
     // where the story starts: one rock, one dodo

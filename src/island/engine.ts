@@ -2,7 +2,7 @@ import { Renderer } from './renderer';
 import { Terrain, SEA } from './terrain';
 import { Flock, MAX_DODOS } from './dodos';
 import { Birds } from './birds';
-import { PALETTES, skyPalette, type Palette } from './palettes';
+import { PALETTES, skyPalette, stormy, type Palette } from './palettes';
 import { islandSound } from './sound';
 import { sound } from '../sound';
 
@@ -104,7 +104,10 @@ export class IslandEngine {
 
   palette = 0;
   pattern = 0;
-  px = 3;
+  /** CSS pixels per printed dot: 2 is fine print (4 device px a dot on a Retina screen) */
+  px = 2;
+  /** frame-time watch: a slow GPU gets coarser dots rather than a stutter */
+  private perf = { n: 0, slow: 0, auto: true };
   private raf = 0;
   private last = performance.now();
   private start = performance.now();
@@ -127,6 +130,7 @@ export class IslandEngine {
     canvas.addEventListener('webglcontextrestored', () => location.reload());
     const q = new URLSearchParams(location.search);
     if (q.has('px')) this.px = clamp(Number(q.get('px')), 1, 8);
+    if (q.has('px') || q.has('still')) this.perf.auto = false;
     if (q.has('still') || window.matchMedia('(prefers-reduced-motion: reduce)').matches) this.intro = 1;
   }
 
@@ -147,7 +151,26 @@ export class IslandEngine {
 
   setPx(px: number) {
     this.px = clamp(Math.round(px), 1, 8);
+    this.perf.auto = false; // the reader chose; leave it be
     this.layout();
+  }
+
+  /**
+   * Fine dots cost 2.25× the texels of px 3. If frames run long for a few
+   * seconds (not just a hitch), step the dots up once, quietly.
+   */
+  private watchFrames(dt: number) {
+    const p = this.perf;
+    if (!p.auto || this.intro < 1 || document.hidden) return;
+    p.n++;
+    if (dt > 1 / 32) p.slow++;
+    if (p.n < 150) return;
+    if (p.slow > 110 && this.px < 3) {
+      this.px++;
+      this.layout();
+      p.auto = false;
+    }
+    p.n = p.slow = 0;
   }
 
   // ------------------------------------------------------------ camera
@@ -426,6 +449,7 @@ export class IslandEngine {
     islandSound.ambience(this.dist, this.sun[1]);
 
     this.render(t);
+    this.watchFrames(dt);
     this.emitHud(now);
   }
 
@@ -500,8 +524,9 @@ export class IslandEngine {
   }
 
   private currentPalette(): Palette {
-    if (this.palette === 0) return skyPalette(this.sun[1], this.sun[0] > 0);
-    return PALETTES[this.palette];
+    if (this.palette !== 0) return PALETTES[this.palette];
+    const p = skyPalette(this.sun[1], this.sun[0] > 0);
+    return this.rain > 0.01 ? stormy(p, this.rain) : p;
   }
 
   private render(t: number) {
@@ -529,11 +554,10 @@ export class IslandEngine {
       },
       {
         uPx: this.canvas.width / this.renderer.worldSize[0],
-        uPal: pal.inks.flat(),
-        uMids: pal.mids.flat(),
+        uRamp: pal.ramps.flat(),
+        uSteps: pal.steps,
         uAccent: pal.accent,
         uPattern: this.pattern,
-        uContrast: 1.15,
         uOutline: 1,
         uLift: pal.lift,
       },

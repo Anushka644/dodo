@@ -328,7 +328,7 @@ export function App() {
             <button onClick={() => engine?.setPx(engine.px - 1)} aria-label="Smaller dots">
               −
             </button>
-            <span>{hud?.px ?? 3}px</span>
+            <span>{hud?.px ?? 2}px</span>
             <button onClick={() => engine?.setPx(engine.px + 1)} aria-label="Bigger dots">
               +
             </button>

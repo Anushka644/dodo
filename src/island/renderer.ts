@@ -61,6 +61,8 @@ export class Renderer {
   private dither: Program;
   private vao: WebGLVertexArrayObject;
   private height: WebGLTexture;
+  private noise: WebGLTexture;
+  private paper: WebGLTexture;
   private target: WebGLTexture;
   private fbo: WebGLFramebuffer;
   private size = [0, 0];
@@ -94,6 +96,25 @@ export class Renderer {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // the screen the print is made through: blue noise, so the grain is fine and even
+    this.noise = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.noise);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, NOISE, NOISE, 0, gl.RED, gl.UNSIGNED_BYTE, blueNoise(NOISE));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+
+    // the sheet the print is pulled on: its tooth and the unevenness of the ink
+    this.paper = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.paper);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG8, PAPER, PAPER, 0, gl.RG, gl.UNSIGNED_BYTE, paperTexture(PAPER));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
 
     this.target = gl.createTexture()!;
     this.fbo = gl.createFramebuffer()!;
@@ -168,9 +189,121 @@ export class Renderer {
     gl.useProgram(this.dither.program);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.target);
-    this.dither.set({ ...dither, tWorld: 0, uWorldRes: this.size });
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.noise);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.paper);
+    gl.activeTexture(gl.TEXTURE0);
+    this.dither.set({ ...dither, tWorld: 0, tNoise: 1, tPaper: 2, uWorldRes: this.size });
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
+}
+
+const NOISE = 64;
+const PAPER = 256;
+
+/**
+ * The paper, as a tiling texture (so the print pass pays two lookups for it,
+ * not a stack of noise): R is the tooth — white noise the shader stretches
+ * into fibres — and G a slow, soft mottle of ink density, 16 lumps across.
+ */
+function paperTexture(size: number): Uint8Array {
+  let seed = 40503;
+  const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+  const lattice = (cells: number) => Float32Array.from({ length: cells * cells }, rnd);
+  const smooth = (t: number) => t * t * (3 - 2 * t);
+  const noise = (g: Float32Array, cells: number, u: number, v: number) => {
+    const fx = u * cells, fy = v * cells;
+    const ix = Math.floor(fx), iy = Math.floor(fy);
+    const tx = smooth(fx - ix), ty = smooth(fy - iy);
+    const at = (i: number, j: number) => g[(j % cells) * cells + (i % cells)];
+    const a = at(ix, iy), b = at(ix + 1, iy), c = at(ix, iy + 1), d = at(ix + 1, iy + 1);
+    return a + (b - a) * tx + (c - a) * ty + (a - b - c + d) * tx * ty;
+  };
+  const m1 = lattice(16), m2 = lattice(52);
+  const out = new Uint8Array(size * size * 2);
+  for (let y = 0, o = 0; y < size; y++) {
+    for (let x = 0; x < size; x++, o += 2) {
+      const u = x / size, v = y / size;
+      out[o] = Math.floor(rnd() * 256);
+      out[o + 1] = Math.floor((noise(m1, 16, u, v) * 0.7 + noise(m2, 52, u, v) * 0.3) * 255.99);
+    }
+  }
+  return out;
+}
+
+/**
+ * A blue-noise threshold map by void-and-cluster (Ulichney, 1993): points are
+ * ranked so that every prefix of them is spread as evenly as it can be. Used as
+ * a dither screen, it gives a fine stochastic grain, like a riso's, with no
+ * visible grid. Deterministic; about 20 ms for 64×64.
+ */
+function blueNoise(size: number): Uint8Array {
+  const n = size * size, mask = size - 1;
+  const R = 5, sigma = 1.6;
+  const ker: number[] = [];
+  for (let y = -R; y <= R; y++) for (let x = -R; x <= R; x++) ker.push(Math.exp(-(x * x + y * y) / (2 * sigma * sigma)));
+  const energy = new Float32Array(n);
+  const on = new Uint8Array(n);
+  const splat = (i: number, s: number) => {
+    const x0 = i & mask, y0 = i >> Math.log2(size);
+    let k = 0;
+    for (let y = -R; y <= R; y++) for (let x = -R; x <= R; x++, k++) energy[((y0 + y) & mask) * size + ((x0 + x) & mask)] += s * ker[k];
+  };
+  const extreme = (want: number, max: boolean) => {
+    let best = -1, bv = max ? -Infinity : Infinity;
+    for (let i = 0; i < n; i++) {
+      if (on[i] !== want) continue;
+      const e = energy[i];
+      if (max ? e > bv : e < bv) {
+        bv = e;
+        best = i;
+      }
+    }
+    return best;
+  };
+  // a random start, then relax it: move the tightest cluster into the biggest void
+  let seed = 22695477;
+  const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 4294967296);
+  const ones = Math.floor(n / 10);
+  for (let c = 0; c < ones; ) {
+    const i = Math.floor(rnd() * n);
+    if (!on[i]) {
+      on[i] = 1;
+      splat(i, 1);
+      c++;
+    }
+  }
+  for (let guard = 0; guard < n; guard++) {
+    const c = extreme(1, true);
+    on[c] = 0;
+    splat(c, -1);
+    const v = extreme(0, false);
+    on[v] = 1;
+    splat(v, 1);
+    if (v === c) break;
+  }
+  const rank = new Uint16Array(n);
+  const start = on.slice(), startE = energy.slice();
+  // ranks below the start: take clusters away
+  for (let r = ones - 1; r >= 0; r--) {
+    const c = extreme(1, true);
+    on[c] = 0;
+    splat(c, -1);
+    rank[c] = r;
+  }
+  // ranks above it: fill voids
+  on.set(start);
+  energy.set(startE);
+  for (let r = ones; r < n; r++) {
+    const v = extreme(0, false);
+    on[v] = 1;
+    splat(v, 1);
+    rank[v] = r;
+  }
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) out[i] = Math.floor(((rank[i] + 0.5) / n) * 256);
+  return out;
 }
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string) {
