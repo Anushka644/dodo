@@ -1,14 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
-import { IslandEngine, type IslandHud } from './island/engine';
+import { IslandEngine, type IslandHud, type Milestone } from './island/engine';
 import { PALETTES, PATTERNS } from './island/palettes';
+import { makePlate, roman } from './island/plate';
 import { sound } from './sound';
 
 const HINTS = [
   'Press and hold on the sea to raise land.',
-  'Now hold R — or the rain button — and let it rain. Forests follow the rain; dodos follow the forest.',
+  'Now hold R, or the rain button, and let it rain. Forests follow the rain.',
   'Drag across the sky to move the sun.',
-  'Hold Shift to carve. Right-drag to turn the island. Click a dodo to say hello.',
+  'Shift-drag to carve. Right-drag to turn the island. Click a dodo to say hello.',
 ];
+
+// the naturalist's log: one line for each first
+const LOG: Record<Milestone, string> = {
+  fire: 'Fire under the water. The sea boils.',
+  land: 'Land, where there was only sea.',
+  rain: 'The first rain.',
+  green: 'Green on the slopes.',
+  river: 'A river finds its way down to the sea.',
+  egg: 'An egg — and then a chick.',
+  birds: 'Seabirds have come to nest.',
+  night: 'The first night. The surf glows.',
+  lavaSea: 'Lava meets the sea, in a roar of steam.',
+  lake: 'A hollow fills and becomes a lake.',
+  half: 'Forest over half the island.',
+  safe: 'Twelve dodos. Enough to stay.',
+};
+
+interface Entry {
+  id: number;
+  stamp: string;
+  text: string;
+}
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -19,6 +42,10 @@ export function App() {
   const [soundOn, setSoundOn] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const [hint, setHint] = useState(0);
+  const [log, setLog] = useState<Entry[]>([{ id: 0, stamp: 'D1 06:40', text: 'The last dodo, alone on a rock.' }]);
+  const [ending, setEnding] = useState(false);
+  const plates = useRef(0);
+  const logId = useRef(1);
   const toastTimer = useRef(0);
 
   const flash = (msg: string) => {
@@ -40,6 +67,14 @@ export function App() {
     engineRef.current = engine;
     engine.onHud = setHud;
     engine.onHatch = (n) => flash(n === 2 ? 'An egg hatched. The last dodo is not the last any more.' : `Another dodo hatched. ${n} on the island.`);
+    engine.onMilestone = (m, day, hour) => {
+      const id = logId.current++;
+      setLog((l) => [...l, { id, stamp: `D${day} ${hour}`, text: LOG[m] }].slice(-4));
+      if (m === 'safe') {
+        setEnding(true);
+        window.setTimeout(() => setEnding(false), 9000);
+      }
+    };
     engine.run();
     setReady(true);
     document.body.dataset.ready = '1';
@@ -147,15 +182,27 @@ export function App() {
     engineRef.current?.pointerUp();
   };
 
+  // a print, mounted as a plate with its caption
   const save = async () => {
-    const blob = await engineRef.current?.capture();
+    const engine = engineRef.current;
+    if (!engine || !hud) return;
+    const n = ++plates.current;
+    const blob = await makePlate(engine.snapshot(), {
+      number: n,
+      day: hud.day,
+      hour: hud.hour,
+      dodos: hud.dodos,
+      land,
+      forest,
+      ...engine.plateInks(),
+    });
     if (!blob) return;
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
-    a.download = `raphus-${Date.now()}.png`;
+    a.download = `raphus-plate-${n}.png`;
     a.click();
     window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-    flash('Printed.');
+    flash(`Plate ${roman(n)} printed.`);
   };
 
   const toggleSound = () => {
@@ -191,7 +238,10 @@ export function App() {
       </header>
 
       <section className="readout mono" aria-live="polite">
-        <div className="clock">{hud?.hour ?? '06:40'}</div>
+        <div className="clock">
+          <span className="day">Day {hud?.day ?? 1}</span>
+          {hud?.hour ?? '06:40'}
+        </div>
         <div className="stats">
           <span>
             {hud?.dodos ?? 1} dodo{(hud?.dodos ?? 1) === 1 ? '' : 's'}
@@ -209,11 +259,26 @@ export function App() {
           <div className="title-line">The last dodo has nowhere left to go.</div>
           <div className="title-sub">Make it an island.</div>
         </div>
+      ) : ending ? (
+        <div className="title ending" role="status">
+          <div className="title-place mono">Raphus cucullatus</div>
+          <div className="title-line">Not extinct.</div>
+          <div className="title-note">Last seen in 1662. Still here, on the island you made.</div>
+        </div>
       ) : (
         <p className="hint" key={hint}>
           {HINTS[hint]}
         </p>
       )}
+
+      <ol className="log" aria-label="Log">
+        {log.map((e, i) => (
+          <li key={e.id} style={{ opacity: 0.35 + 0.65 * ((i + 1) / log.length) }}>
+            <span className="stamp mono">{e.stamp}</span>
+            <span className="entry">{e.text}</span>
+          </li>
+        ))}
+      </ol>
 
       <footer className="dock">
         <div className="group" role="radiogroup" aria-label="Inks">

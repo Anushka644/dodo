@@ -24,7 +24,23 @@ const rotate = (v: V3, k: V3, a: number): V3 => {
 // forest that has to grow before the next dodo hatches (square world units)
 const HATCH_AT = [0.25, 0.7, 1.3, 2.1, 3.1, 4.3, 5.7, 7.3, 9.1, 11.1, 13.3];
 
+/** things worth writing down in the log, once each */
+export type Milestone =
+  | 'land'
+  | 'fire'
+  | 'rain'
+  | 'green'
+  | 'river'
+  | 'egg'
+  | 'birds'
+  | 'night'
+  | 'lavaSea'
+  | 'lake'
+  | 'half'
+  | 'safe';
+
 export interface IslandHud {
+  day: number;
   dodos: number;
   land: number;
   forest: number;
@@ -95,10 +111,18 @@ export class IslandEngine {
   private hudAt = 0;
   onHud?: (h: IslandHud) => void;
   onHatch?: (n: number) => void;
+  /** a first: the first land, the first rain, the first river… */
+  onMilestone?: (m: Milestone, day: number, hour: string) => void;
+  private reached = new Set<Milestone>();
+  private startLand = 0;
+  /** days since the story began (the sun's trips through midnight) */
+  day = 1;
+  private lastHour = 6;
 
   constructor(private canvas: HTMLCanvasElement) {
     this.renderer = new Renderer(canvas);
     this.flock = new Flock(this.terrain);
+    this.startLand = this.terrain.landArea;
     canvas.addEventListener('webglcontextlost', (e) => e.preventDefault());
     canvas.addEventListener('webglcontextrestored', () => location.reload());
     const q = new URLSearchParams(location.search);
@@ -302,6 +326,11 @@ export class IslandEngine {
     const sk = 1 - Math.exp(-dt * 8);
     this.sun = norm([this.sun[0] + (this.sunGoal[0] - this.sun[0]) * sk, this.sun[1] + (this.sunGoal[1] - this.sun[1]) * sk, this.sun[2] + (this.sunGoal[2] - this.sun[2]) * sk]);
 
+    // a new day each time the sun passes midnight going forwards
+    const hr = this.hours();
+    if (this.lastHour > 20 && hr < 4) this.day++;
+    this.lastHour = hr;
+
     // the brush follows the pointer over land and sea
     let hit: V3 | null = null;
     if (this.pointer.inside && this.drag?.kind !== 'orbit' && this.drag?.kind !== 'sun') hit = this.pick(this.pointer.x, this.pointer.y);
@@ -323,6 +352,7 @@ export class IslandEngine {
     }
     islandSound.rumble(sculpting && hit ? (this.drag?.kind === 'sculpt' && this.drag.carve ? -1 : 1) : 0);
     this.stepVents(dt, raising);
+    this.milestones(raising);
 
     // weather: rain gathers quickly and clears slowly; storms throw lightning
     this.rain += ((this.rainHeld ? 1 : 0) - this.rain) * Math.min(1, dt * (this.rainHeld ? 2.2 : 0.5));
@@ -397,6 +427,28 @@ export class IslandEngine {
 
     this.render(t);
     this.emitHud(now);
+  }
+
+  private mark(m: Milestone, when = true) {
+    if (!when || this.reached.has(m) || this.intro < 1) return;
+    this.reached.add(m);
+    this.onMilestone?.(m, this.day, this.hour());
+  }
+
+  private milestones(raising: boolean) {
+    const T = this.terrain;
+    this.mark('fire', raising);
+    this.mark('land', T.landArea > this.startLand + 0.5);
+    this.mark('rain', this.rain > 0.5);
+    this.mark('green', T.forestArea > 0.3);
+    this.mark('river', T.riverCells > 25);
+    this.mark('egg', this.flock.count > 1);
+    this.mark('birds', this.birds.count > 0 && this.reached.has('egg'));
+    this.mark('night', this.sun[1] < -0.12);
+    this.mark('lavaSea', !!T.steam);
+    this.mark('lake', T.lakeCells > 8);
+    this.mark('half', T.landArea > 2 && T.forestArea > T.landArea * 0.5);
+    this.mark('safe', this.flock.count >= MAX_DODOS);
   }
 
   /** a plume rises where you push land up; it drifts and thins after you let go */
@@ -488,11 +540,16 @@ export class IslandEngine {
     );
   }
 
+  /** the hour of day (0–24) from where the sun is */
+  private hours() {
+    const a = Math.atan2(this.sun[1], this.sun[0]); // 0 east horizon, π/2 overhead, π west
+    const h = 6 + (a / Math.PI) * 12;
+    return ((h % 24) + 24) % 24;
+  }
+
   /** "06:40" from where the sun is */
   hour(): string {
-    const a = Math.atan2(this.sun[1], this.sun[0]); // 0 east horizon, π/2 overhead, π west
-    let h = 6 + (a / Math.PI) * 12;
-    h = ((h % 24) + 24) % 24;
+    const h = this.hours();
     const hh = Math.floor(h);
     const mm = Math.floor((h - hh) * 60);
     return `${String(hh).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
@@ -503,6 +560,7 @@ export class IslandEngine {
     this.hudAt = now;
     const d = this.drag;
     this.onHud?.({
+      day: this.day,
       dodos: this.flock.count,
       land: this.terrain.landArea,
       forest: this.terrain.forestArea,
@@ -516,8 +574,20 @@ export class IslandEngine {
     });
   }
 
-  capture(): Promise<Blob | null> {
+  /** paper and ink for a mounted plate: the Day palette always prints on cream */
+  plateInks(): { paper: [number, number, number]; ink: [number, number, number] } {
+    if (this.palette === 0) return { paper: [0.949, 0.925, 0.863], ink: [0.078, 0.086, 0.102] };
+    const p = PALETTES[this.palette];
+    return { paper: p.inks[3], ink: p.inks[0] };
+  }
+
+  /** the print as it is this moment, copied out of the GL canvas */
+  snapshot(): HTMLCanvasElement {
     this.render((performance.now() - this.start) / 1000);
-    return new Promise((res) => this.canvas.toBlob(res, 'image/png'));
+    const c = document.createElement('canvas');
+    c.width = this.canvas.width;
+    c.height = this.canvas.height;
+    c.getContext('2d')!.drawImage(this.canvas, 0, 0);
+    return c;
   }
 }

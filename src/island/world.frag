@@ -323,7 +323,7 @@ float cloudShadow(vec3 p) {
 
 float lightAmount() {
   // the sun, then the moon: a dim silver light from the opposite sky; storms dim both
-  return mix(0.3, 1.0, sunUp()) * (1.0 - 0.5 * uRain);
+  return mix(0.3, 1.0, sunUp()) * (1.0 - 0.3 * uRain);
 }
 
 vec3 lightDir() {
@@ -633,7 +633,7 @@ void main() {
     float streak = step(1.0 - uRain * 0.62, hash12(vec2(col, floor(frag.y / uRes.y * (1.6 + r) + uTime * (1.1 + r * 0.8) + r * 7.0))));
     streak *= smoothstep(0.0, 0.02, y) * (1.0 - smoothstep(0.02, 0.13, y));
     tone = mix(tone, tone * 0.45 + 0.5, streak * 0.9);
-    tone *= 1.0 - 0.18 * uRain;
+    tone *= 1.0 - 0.1 * uRain;
   }
   // the opening: a veil of cloud the camera falls through
   if (uIntro < 1.0) {

@@ -1,6 +1,6 @@
-# Specimen: Cross-border
+# Raphus
 
-**Every browser window is a country. Throw money between them.**
+**An island for the last dodo. You make it with your hands; it comes alive by itself.**
 
 Live: _add your deploy link here_ · Built for the Dodo Payments design engineer brief.
 
@@ -8,82 +8,114 @@ Live: _add your deploy link here_ · Built for the Dodo Payments design engineer
 
 ## What it is
 
-Open the page and you're in the United States, with a few banknotes of
-*The Dodo Reserve* on the floor of the window. Pick one up and throw it
-around. It's paper, so it tumbles and lands.
+Mauritius, 1662. The camera falls through the clouds to a single rock in the
+sea, and on it stands the last dodo.
 
-Click **Open a border** and a second window opens next to the first: India.
-Throw a note hard at the edge of the first window. It leaves the window,
-crosses the real gap on your desktop between the two, and lands in the
-second one.
+Press and hold on the sea and land comes up out of it: the water boils, new
+rock arrives molten, and smoke rolls off the vent. Lava finds its way down the
+slopes in glowing threads and hisses into the sea. Hold for rain and the
+weather turns: clouds, lightning, thunder a beat later. Where it rains, forest
+spreads over the bare rock. Rivers form, find the sea, and slowly cut their
+valleys, and hollows fill into lakes. As the forest grows, eggs hatch. Seabirds
+come in from the sea to nest. Leave it alone and the day goes on by itself;
+at night the surf glows.
 
-The note doesn't change, but how it's written down does. Each window prints
-every note in its own currency and colours. A note caught half-way across the
-border reads **$1.00** on one side of the window edge and **₹83.20** on the
-other: it converts exactly at the border. It also picks up a passport stamp
-for every country it enters, so well-travelled money ends up covered in them.
+Raise twelve dodos and the species isn't extinct any more, at least here.
 
-- **Overlap two windows** and the border between them opens (it glows lime), so money falls freely from one country into the other.
-- **Drag a window around** and the money inside it slides and piles against the walls.
-- **Close a country** and its money has nowhere to be, so it's *returned to sender*, with a stamp to prove it.
-- **Throw too softly** and it bounces off the border. Customs only clears a confident throw, and only toward another country.
-- The window's own title bar and tab icon show what it holds: `₹249.60 · India`.
+The whole world is drawn as a print: four inks and one fluorescent spot
+colour, put down through an ordered dither, like an engraving that happens to
+be alive. **Print** mounts the current view as a plate from an old natural
+history, with a caption of what's on the island.
 
-Keys: **P** prints three more notes, **O** opens a border. On a phone, where
-there's only one window, tilting the phone tilts the country.
+| | |
+|---|---|
+| **Press and hold** on the sea or land | raise land (it erupts) |
+| **Shift-drag** | carve land away |
+| **Hold R** or the rain button | rain, storms |
+| **Drag the sky** | move the sun; below the horizon is night |
+| **Right-drag**, arrows · **scroll** · **double-click** | turn · zoom · fly to a spot |
+| **Click a dodo** | say hello |
+| **1–5** · **P** · **[ ]** | inks · dither pattern · dot size |
+| **H** | back home |
+
+On a touchscreen: one finger sculpts, two fingers turn and zoom.
 
 ## Why
 
-Dodo's whole job is money crossing borders: one integration, 150+
-countries, the local currency on the other side. I wanted to make that
-literal and physical, without a chart or a checkout in sight. Your desktop is
-the world map, windows are countries, and the gap between two windows is the
-border. The toy doesn't explain foreign exchange. It just does it, at the
-exact pixel where one country ends.
+The dodo is Dodo's mascot, and also the most famous thing humans ever made
+extinct. A toy where you give it back its island felt kinder than another
+logo animation. The brief asked for something interactive that feels
+finished, so the goal was a small world with cause and effect you can feel in
+the first ten seconds (press, and the sea boils), and a slower loop that
+rewards staying (rain, forest, rivers, eggs, birds, the log filling up).
+
+It's also built the way the brief suggested, out of shaders. Paper Shaders'
+dithering was the starting point for the look; here the dither is the whole
+renderer, and a few inks stretch to cover sea, forest, lava and night.
 
 ## How it's built
 
-- **One world, many windows.** Windows on the same origin find each other over a `BroadcastChannel` and report where their viewport sits on the desktop (`screenX/Y`, adjusted for the browser chrome). The oldest visible window runs the physics for the whole desktop and broadcasts every note's position each frame. Every window draws the part of the desk it covers. If the leader closes, the next oldest takes over from the last state it heard.
-- **Physics in desktop pixels.** [planck.js](https://github.com/piqnt/planck.js) (Box2D) with notes as rigid bodies. Each window is a box of four kinematic walls that move with the window, which is why dragging a window sloshes its money. A pre-solve contact filter turns walls into borders: a wall disappears where another window overlaps it, and for a hard throw toward another country. Once a note is in the gap, its arc is steered so it lands in the window it was thrown at. A note with nowhere to land within 1.6 s is returned to sender.
-- **The note is a material, not a picture.** A shader describes the banknote as paper, offset ink, raised intaglio ink, colour-shifting ink, foil, a security thread and a watermark. The guilloche (the fine wavy line patterns) is solved per pixel from its curve equations. The portrait is a dodo I drew, engraved by the shader. Each country prints from its own Canvas2D plates: currency symbol, amount in words, palette. Passport stamps come from a generated rubber-stamp atlas.
-- **Orthographic, on purpose.** Each window projects desktop pixels straight onto its viewport, so a note straddling two windows lines up exactly across the gap. Notes tumble and bow as they fly; the leader computes that too, so every window draws the same motion.
-- **Small things.** Sounds are synthesised and only play in the window where something happens: a stamp thunk, a paper flutter, a snap when a payment bounces. The border band glows lime where it's open. Rendering adapts its resolution if frames run long.
+No 3D engine: React for the chrome, one WebGL2 canvas, and about 3,000 lines
+of TypeScript and GLSL.
+
+- **The world is one fragment shader.** It raymarches a heightfield (the land
+  you sculpt), an analytic sea with swells and a reef break, tree canopies,
+  soft shadows, cloud shadows, signed-distance dodos, billowing volumetric
+  smoke, and seabirds projected into screen space and drawn as inked "M"s. It
+  renders at print resolution, one texel per dot, and outputs no colour: only
+  tone, depth, material and a glow mask.
+- **The print is a second pass.** It inks that tone through an ordered
+  dither (Bayer, blue noise, a 45° halftone or engraving lines) with key and
+  paper shared and the middle inks chosen per material, the way a risograph run
+  uses a different spot colour for each plate. Contour lines go wherever depth
+  jumps. The "Day" palette follows the sun from dawn through dusk to night.
+- **The land is simulated on the CPU** in a 256² heightmap, then mirrored
+  into an RGBA16F texture (height, vegetation, lava heat, water):
+  - *Drainage* is a priority-flood from the coast, so every river reaches the
+    sea, and a hollow fills to its rim and becomes a lake. Flow accumulates
+    down the drainage tree in one pass; while it rains, fast water erodes its
+    bed.
+  - *Lava* is heat that spills from cell to cell down the same drainage tree,
+    cooling as it goes. Where it reaches the sea, a steam plume starts.
+  - *Forest* spreads from forest, faster in rain and along rivers, and only
+    where the height and slope suit it.
+- **Life.** Dodos hatch as the forest grows. They waddle to new spots, won't
+  climb cliffs, float (offended) if you drown their ground, and run, flapping,
+  from lava. Seabirds arrive from the sea, circle the island, alternate
+  wingbeats and glides, and leave at night.
+- **Sound is synthesised** with the Web Audio API: the sea (louder as you get
+  closer), the ground groaning as it rises, lava hiss and crackle, rain,
+  thunder with a delay, seabird cries, eggs, and the dodo's two-note honk.
+- **Small things.** The opening descends through dithered cloud. The chrome
+  fades while you work. A log notes each first ("A river finds its way down to
+  the sea."). Reduced motion skips the intro. Dot size and inks are live.
 
 ## What I'd explore next
 
-- **Other people's desktops.** Swap the BroadcastChannel for a WebSocket and a throw could land on a friend's screen. A real cross-border payment, in about 40 lines.
-- **Fees and float.** Let a small cut go missing at each border, then show where it went.
-- **Settlement time.** Some borders could hold a note in a visible queue before it's released.
-- **Counterfeits.** One note in a hundred has the wrong serial, and only the UV lamp from the earlier version catches it.
+- **Seasons and a wider sim.** Wind that carries rain clouds over ridges
+  (wet windward forest, dry leeward scrub), tides, and erosion that leaves
+  sediment as beaches and deltas.
+- **Ships.** A sail on the horizon at dawn, the thing that actually ended the
+  dodo, and the choice of whether to let it land.
+- **Shareable islands.** The heightmap compresses to a few KB. An island
+  could live in the URL, and a plate could link back to the island it shows.
+- **Paper.** Overprint between inks, a little mis-registration, and paper
+  texture under the dither, so a printed plate feels like a real risograph.
+- **Hands.** Raise land with an open palm over the webcam and sweep for rain.
+  I prototyped camera input earlier in this project and dropped it, because
+  the mouse was more precise. With a world this tactile it might earn its
+  place back.
 
 ## Run it
 
 ```bash
 npm install
-npm run dev      # http://localhost:5173
-npm run build    # static site in dist/
+npm run dev        # http://localhost:5173
+npm run build      # static site in dist/
 ```
 
-Allow pop-ups so **Open a border** can open the next country. Deploy `dist/`
-anywhere static. On Vercel, import the repo and accept the Vite defaults. On
-GitHub Pages, enable *Settings → Pages → GitHub Actions*; the included
-workflow deploys from `main`.
+Add `?still` to skip the intro, or `?px=4` for bigger dots.
 
-For testing without moving real windows, `?wx=…&wy=…` fakes a window's desktop
-position, and `?c=IN` picks the country.
-
-**Stack:** Vite, React, TypeScript, raw WebGL2, Canvas2D, WebAudio, planck.js.
-
-```
-src/
-  borders/net.ts       windows find each other; who runs the physics
-  borders/world.ts     desktop physics: windows as boxes, customs, returned payments
-  borders/engine.ts    per-window loop: sync, render this window's slice of the desk
-  borders/countries.ts countries, currencies, indicative rates
-  gl/material.glsl     the banknote as materials (front, reverse, stamps)
-  gl/sheet.frag        lighting a note
-  gl/backdrop.frag     the country behind the glass, and its border
-  gl/renderer3d.ts     minimal WebGL2
-  note/*               printing plates per country, the drawn dodo, stamp atlas
-scripts/tests/world.test.ts   desk physics without a browser (npx tsx …)
-```
+Deploys as a static site: push to `main` and the included GitHub Pages
+workflow publishes `dist/`, or import the repo into Vercel or Netlify (build
+`npm run build`, output `dist`).

@@ -270,6 +270,9 @@ export class Terrain {
     return max;
   }
 
+  riverCells = 0;
+  lakeCells = 0;
+
   /** where lava is pouring into the sea this moment: x, z, strength */
   steam: [number, number, number] | null = null;
   private heatPrev = new Float32Array(N * N);
@@ -417,12 +420,17 @@ export class Terrain {
     const rise = 1 - Math.exp(-dt * 1.5);
     const fall = 1 - Math.exp(-dt * 0.25);
     const cut = 0.006 * rain * dt;
+    let rivers = 0, lakes = 0;
     for (let c = 0; c < this.landOrder; c++) {
       const k = order[c];
       const h = H[k];
       const lake = F[k] - h > 0.03 ? 1 : 0;
       const want = h > SEA ? Math.max(lake, smooth(60, 260, A[k])) : 0;
       W[k] += (want - W[k]) * (want > W[k] ? rise : fall);
+      if (W[k] > 0.5) {
+        if (lake) lakes++;
+        else rivers++;
+      }
       // erosion: fast water on a slope wears the land down towards its outlet
       const r = R[k];
       if (cut > 0 && r >= 0 && A[k] > 30 && !lake) {
@@ -433,6 +441,8 @@ export class Terrain {
         this.reshaped = true;
       }
     }
+    this.riverCells = rivers;
+    this.lakeCells = lakes;
     // the sea takes back whatever river water was left on drowned cells
     for (let k = 0; k < N * N; k++) if (H[k] <= SEA && W[k] > 0) W[k] = Math.max(0, W[k] - dt * 2);
     this.markDirty(0, 0, N - 1, N - 1);

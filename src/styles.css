@@ -77,14 +77,16 @@ button {
 .masthead,
 .readout,
 .dock,
-.hint {
+.hint,
+.log {
   transition: opacity 900ms var(--ease) 400ms;
 }
 
 .app:not(.is-ready) .masthead,
 .app:not(.is-ready) .readout,
 .app:not(.is-ready) .dock,
-.app:not(.is-ready) .hint {
+.app:not(.is-ready) .hint,
+.app:not(.is-ready) .log {
   opacity: 0;
 }
 
@@ -92,6 +94,9 @@ button {
 .mode-raise .masthead,
 .mode-carve .masthead,
 .mode-sun .masthead,
+.mode-raise .log,
+.mode-carve .log,
+.mode-sun .log,
 .mode-raise .dock,
 .mode-carve .dock,
 .mode-sun .dock {
@@ -142,6 +147,15 @@ button {
   line-height: 1.1;
 }
 
+.day {
+  margin-right: 10px;
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--fg-2);
+  vertical-align: 4px;
+}
+
 .stats {
   margin-top: 4px;
   font-size: 10px;
@@ -178,6 +192,51 @@ button {
   }
 }
 
+/* the log: a naturalist's notes, one line for each first */
+.log {
+  position: fixed;
+  left: 30px;
+  top: 104px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  pointer-events: none;
+  user-select: none;
+}
+
+.log li {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 4px 10px 4px 8px;
+  background: var(--ink);
+  animation: log-in 900ms var(--ease) both;
+  transition: opacity 600ms;
+}
+
+.stamp {
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  color: var(--fg-2);
+}
+
+.entry {
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 14px;
+}
+
+@keyframes log-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
 /* the opening card, printed over the clouds */
 .title {
   position: fixed;
@@ -202,6 +261,30 @@ button {
   font-style: italic;
   font-size: clamp(26px, 4.2vw, 46px);
   line-height: 1.1;
+}
+
+.ending {
+  animation: ending 9s var(--ease) both;
+}
+
+@keyframes ending {
+  0% {
+    opacity: 0;
+  }
+  12%,
+  80% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.title-note {
+  margin-top: 12px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: 17px;
 }
 
 .title-sub {
@@ -427,6 +510,13 @@ button {
   .group {
     justify-content: space-between;
   }
+  .log {
+    left: 14px;
+    top: 74px;
+  }
+  .log li:not(:last-child) {
+    display: none;
+  }
   .hint {
     bottom: 170px;
     white-space: normal;
@@ -444,4 +534,11 @@ button {
     transition-duration: 1ms !important;
     transition-delay: 0ms !important;
   }
+}
+
+/* the ending is printed on its own slip of paper, whatever the hour */
+.title.ending {
+  padding: 26px 44px 24px;
+  background: rgba(242, 236, 220, 0.94);
+  mix-blend-mode: normal;
 }
