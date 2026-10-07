@@ -231,15 +231,20 @@ function glyphSize(g: Glyph) {
   return { w: (g.ink[2] - g.ink[0]) / PX, h: (g.ink[3] - g.ink[1]) / PX, below: (g.ink[3] - g.oy) / PX };
 }
 
-// One line of mixed type, fitted to a width and centred. Each piece is
-// either plain text in a face, or a pre-set glyph (for figures with a sign).
-type Piece = { text: string; spec: string; size: number; family: string; tracking?: number } | { glyph: Glyph } | { gap: number } | { dot: number };
+// One line of mixed type, fitted to a width and centred. A piece is plain
+// text in a face, or a `figure` — an amount whose currency sign may need
+// building (see glyphs.ts) — or a gap, or a small diamond.
+type Piece =
+  | { text: string; spec: string; size: number; family: string; tracking?: number }
+  | { figure: string; weight: string; size: number; family: string }
+  | { gap: number }
+  | { dot: number };
 
 function line(ctx: Ctx, pieces: Piece[], cx: number, y: number, maxW: number) {
   const widths = pieces.map((p) => {
     if ('gap' in p) return p.gap;
     if ('dot' in p) return p.dot * 2;
-    if ('glyph' in p) return p.glyph.adv / PX;
+    if ('figure' in p) return setSymbol(p.figure, p.weight, p.family, p.size * PX).adv / PX;
     font(ctx, p.spec, p.size, p.family);
     const chars = [...p.text];
     return chars.reduce((a, ch) => a + measure(ctx, ch), 0) + (p.tracking ?? 0) * (chars.length - 1);
@@ -255,11 +260,12 @@ function line(ctx: Ctx, pieces: Piece[], cx: number, y: number, maxW: number) {
   pieces.forEach((p, i) => {
     if ('dot' in p) {
       diamond(ctx, x + p.dot, -p.dot * 1.2, p.dot * 0.55);
-    } else if ('glyph' in p) {
-      // glyphs are set at full plate resolution; undo our own scale for them
+    } else if ('figure' in p) {
+      // set at the final size in real plate pixels, so it stays crisp
+      const g = setSymbol(p.figure, p.weight, p.family, p.size * k * PX);
       ctx.save();
       ctx.scale(1 / k, 1 / k);
-      printGlyph(ctx, p.glyph, x * k, 0, 0, 'base');
+      printGlyph(ctx, g, x * k, 0, 0, 'base');
       ctx.restore();
     } else if ('text' in p) {
       font(ctx, p.spec, p.size, p.family);
@@ -307,7 +313,6 @@ function drawInkStatic(ctx: Ctx, country: Country) {
   diamond(ctx, CX - w / 2 - 0.018, 0.507, 0.008);
   diamond(ctx, CX + w / 2 + 0.018, 0.507, 0.008);
   // …and what that is worth here, in words and in figures
-  const figure = setSymbol(formatMoney(country, 1), '400', FONTS.fell, 0.027 * PX);
   line(
     ctx,
     [
@@ -315,7 +320,7 @@ function drawInkStatic(ctx: Ctx, country: Country) {
       { gap: 0.012 },
       { dot: 0.0052 },
       { gap: 0.012 },
-      { glyph: figure },
+      { figure: formatMoney(country, 1), weight: '400', size: 0.027, family: FONTS.fell },
     ],
     CX,
     0.575,
@@ -487,7 +492,8 @@ function drawBack(ctx: Ctx, country: Country) {
   ctx.lineWidth = 0.0015;
   ctx.strokeRect(0.11, 0.11, ASPECT - 0.22, 0.78);
   const g = fitSymbol(country.symbol, 0.62, 0.56, 0.54);
-  printGlyph(ctx, g, 0.5, 0.5, 0.5, 0.5);
+  // centred on the reverse rosette (drawn at ASPECT − 0.62 in the shader)
+  printGlyph(ctx, g, 0.62, 0.5, 0.5, 0.5);
   font(ctx, '400', 0.08, FONTS.sc);
   spaced(ctx, 'IN DODO WE TRUST', 1.42, 0.5, 0.01);
   font(ctx, 'italic 400', 0.034, FONTS.fell);
