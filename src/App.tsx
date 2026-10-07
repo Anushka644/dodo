@@ -5,9 +5,9 @@ import { sound } from './sound';
 
 const HINTS = [
   'Press and hold on the sea to raise land.',
+  'Now hold R — or the rain button — and let it rain. Forests follow the rain; dodos follow the forest.',
   'Drag across the sky to move the sun.',
-  'Hold Shift to carve it back down. Right-drag to turn the island.',
-  'Click a dodo to say hello. Double-click to fly closer.',
+  'Hold Shift to carve. Right-drag to turn the island. Click a dodo to say hello.',
 ];
 
 export function App() {
@@ -54,10 +54,29 @@ export function App() {
   // the hints move along as you do each thing
   useEffect(() => {
     if (!hud) return;
-    if (hint === 0 && hud.land > 0.45) setHint(1);
-    if (hint === 1 && hud.mode === 'sun') setHint(2);
-    if (hint === 2 && (hud.mode === 'carve' || hud.mode === 'orbit')) setHint(3);
+    if (hint === 0 && hud.land > 0.6) setHint(1);
+    if (hint === 1 && hud.forest > 0.3) setHint(2);
+    if (hint === 2 && hud.mode === 'sun') setHint(3);
   }, [hud, hint]);
+
+  // hold R for rain
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => {
+      if ((e.key === 'r' || e.key === 'R') && !e.repeat && !e.metaKey && !e.ctrlKey) engineRef.current?.setRain(true);
+    };
+    const up = (e: KeyboardEvent) => {
+      if (e.key === 'r' || e.key === 'R') engineRef.current?.setRain(false);
+    };
+    const blur = () => engineRef.current?.setRain(false);
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', blur);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', blur);
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -148,6 +167,7 @@ export function App() {
 
   const engine = engineRef.current;
   const land = hud ? (hud.land * 0.8).toFixed(1) : '0.0';
+  const forest = hud && hud.land > 0.05 ? Math.min(100, Math.round((hud.forest / hud.land) * 100)) : 0;
 
   return (
     <div className={`app ${ready ? 'is-ready' : ''} mode-${hud?.mode ?? 'idle'}`}>
@@ -178,12 +198,22 @@ export function App() {
           </span>
           <span className="dot">·</span>
           <span>{land} km² of land</span>
+          <span className="dot">·</span>
+          <span>{forest}% forest</span>
         </div>
       </section>
 
-      <p className="hint" key={hint}>
-        {HINTS[hint]}
-      </p>
+      {hud && hud.intro < 1 ? (
+        <div className="title" style={{ opacity: Math.min(1, hud.intro * 4) * Math.min(1, (1 - hud.intro) * 5) }}>
+          <div className="title-place mono">Mauritius · 1662</div>
+          <div className="title-line">The last dodo has nowhere left to go.</div>
+          <div className="title-sub">Make it an island.</div>
+        </div>
+      ) : (
+        <p className="hint" key={hint}>
+          {HINTS[hint]}
+        </p>
+      )}
 
       <footer className="dock">
         <div className="group" role="radiogroup" aria-label="Inks">
@@ -205,6 +235,25 @@ export function App() {
             </button>
           ))}
         </div>
+
+        <button
+          className={`rain mono ${hud?.raining ? 'is-on' : ''}`}
+          onPointerDown={(e) => {
+            e.preventDefault();
+            engineRef.current?.setRain(true);
+          }}
+          onPointerUp={() => engineRef.current?.setRain(false)}
+          onPointerLeave={() => engineRef.current?.setRain(false)}
+          onPointerCancel={() => engineRef.current?.setRain(false)}
+          onContextMenu={(e) => e.preventDefault()}
+          title="Hold to make it rain (R)"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
+            <path d="M7 15a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17 8.5a3.5 3.5 0 0 1 .5 6.5" />
+            <path d="M9 18l-1 3M13 17l-1 3M17 18l-1 3" />
+          </svg>
+          Hold for rain
+        </button>
 
         <div className="group">
           <button className="chip mono" onClick={() => engine && (engine.pattern = (engine.pattern + 1) % PATTERNS.length)} title="Dither pattern (P)">

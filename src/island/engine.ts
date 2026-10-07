@@ -20,12 +20,15 @@ const rotate = (v: V3, k: V3, a: number): V3 => {
   return [v[0] * c + kv[0] * s + k[0] * kd * (1 - c), v[1] * c + kv[1] * s + k[1] * kd * (1 - c), v[2] * c + kv[2] * s + k[2] * kd * (1 - c)];
 };
 
-// land you have to raise before the next dodo hatches (square world units)
-const HATCH_AT = [0.6, 1.4, 2.4, 3.6, 5, 6.6, 8.4, 10.4, 12.6, 15, 17.6];
+// forest that has to grow before the next dodo hatches (square world units)
+const HATCH_AT = [0.25, 0.7, 1.3, 2.1, 3.1, 4.3, 5.7, 7.3, 9.1, 11.1, 13.3];
 
 export interface IslandHud {
   dodos: number;
   land: number;
+  forest: number;
+  raining: boolean;
+  intro: number;
   hour: string;
   palette: number;
   pattern: number;
@@ -61,8 +64,17 @@ export class IslandEngine {
   private drag: Drag = null;
   private brush = { x: 0, z: 0, r: 0.6, on: 0, strength: 0 };
   private idle = 0;
+  /** the opening shot: down through the clouds to the last dodo (0 → 1) */
+  intro = 0;
   private hatched = 0;
   private landTimer = 0;
+  private growTimer = 0;
+  // weather
+  private rainHeld = false;
+  rain = 0;
+  private cloud = 0.25;
+  private flash = 0;
+  private nextFlash = 2;
 
   palette = 0;
   pattern = 0;
@@ -81,6 +93,7 @@ export class IslandEngine {
     canvas.addEventListener('webglcontextrestored', () => location.reload());
     const q = new URLSearchParams(location.search);
     if (q.has('px')) this.px = clamp(Number(q.get('px')), 1, 8);
+    if (q.has('still') || window.matchMedia('(prefers-reduced-motion: reduce)').matches) this.intro = 1;
   }
 
   run() {
@@ -144,6 +157,7 @@ export class IslandEngine {
   // ------------------------------------------------------------ input
 
   pointerDown(x: number, y: number, button: number, shift: boolean) {
+    if (this.intro < 1) this.intro = Math.max(this.intro, 0.9);
     sound.wake();
     islandSound.wake();
     this.idle = 0;
@@ -225,6 +239,16 @@ export class IslandEngine {
     return norm([r[0], clamp(r[1], -0.45, 0.98), r[2]]);
   }
 
+  /** hold to make it rain */
+  setRain(on: boolean) {
+    if (on) {
+      sound.wake();
+      islandSound.wake();
+      this.idle = 0;
+    }
+    this.rainHeld = on;
+  }
+
   setSunHour(hour: number) {
     // a simple daily arc: rises in the east (+x), sets in the west
     const a = ((hour - 6) / 12) * Math.PI;
@@ -244,8 +268,17 @@ export class IslandEngine {
     const t = (now - this.start) / 1000;
     this.idle += dt;
 
+    // the opening: start high in the clouds, settle down on the rock
+    if (this.intro < 1) {
+      this.intro = Math.min(1, this.intro + dt / 6.5);
+      const e = 1 - Math.pow(1 - this.intro, 3);
+      this.yaw = this.goal.yaw = 0.75 + (1 - e) * 1.4;
+      this.pitch = this.goal.pitch = 0.3 + (1 - e) * 1.05;
+      this.dist = this.goal.dist = 5.2 + (1 - e) * 14;
+      if (this.intro >= 1) islandSound.honk(0.9);
+    }
     // the island turns slowly when you leave it alone
-    if (!this.drag && this.idle > 6) this.goal.yaw += dt * 0.035;
+    if (!this.drag && this.idle > 6 && this.intro >= 1) this.goal.yaw += dt * 0.035;
     this.updateCamera(dt);
 
     // left alone, the day goes on: the sun travels its arc (a day is about four minutes)
@@ -279,8 +312,32 @@ export class IslandEngine {
     }
     islandSound.rumble(sculpting && hit ? (this.drag?.kind === 'sculpt' && this.drag.carve ? -1 : 1) : 0);
 
-    if (this.terrain.dirty) {
-      this.renderer.uploadHeight(this.terrain.h, this.terrain.dirty);
+    // weather: rain gathers quickly and clears slowly; storms throw lightning
+    this.rain += ((this.rainHeld ? 1 : 0) - this.rain) * Math.min(1, dt * (this.rainHeld ? 2.2 : 0.5));
+    this.cloud += (0.25 + 0.75 * Math.max(this.rain, this.rainHeld ? 1 : 0) - this.cloud) * Math.min(1, dt * 1.2);
+    this.flash = Math.max(0, this.flash - dt * 5);
+    if (this.rain > 0.6) {
+      this.nextFlash -= dt;
+      if (this.nextFlash <= 0) {
+        this.flash = 1;
+        this.nextFlash = 1.5 + Math.random() * 5;
+        islandSound.thunder(0.3 + Math.random() * 1.1);
+      }
+    }
+    islandSound.rain(this.rain);
+
+    // the forest grows where it rains
+    this.growTimer -= dt;
+    if (this.growTimer <= 0) {
+      this.growTimer = 0.25;
+      this.terrain.grow(0.25, this.rain);
+    }
+    if (this.terrain.vegDirty) {
+      this.renderer.uploadLand(this.terrain.h, this.terrain.veg, [0, 0, 255, 255]);
+      this.terrain.vegDirty = false;
+      this.terrain.dirty = null;
+    } else if (this.terrain.dirty) {
+      this.renderer.uploadLand(this.terrain.h, this.terrain.veg, this.terrain.dirty);
       this.terrain.dirty = null;
     }
 
@@ -289,7 +346,7 @@ export class IslandEngine {
     if (this.landTimer <= 0) {
       this.landTimer = 0.4;
       this.terrain.countLand();
-      const area = this.terrain.landArea;
+      const area = this.terrain.forestArea;
       while (this.hatched < HATCH_AT.length && area > HATCH_AT[this.hatched] && this.flock.count < MAX_DODOS) {
         const spot = this.flock.spot();
         if (!spot) break;
@@ -328,6 +385,10 @@ export class IslandEngine {
         uBrushOn: this.brush.on * (this.drag?.kind === 'sun' ? 0 : 1),
         uDodo: dodos.pos,
         uDodoAnim: dodos.anim,
+        uRain: this.rain,
+        uFlash: this.flash,
+        uCloud: Math.max(this.cloud, (1 - this.intro) * 1.2),
+        uIntro: this.intro,
       },
       {
         uPx: this.canvas.width / this.renderer.worldSize[0],
@@ -358,6 +419,9 @@ export class IslandEngine {
     this.onHud?.({
       dodos: this.flock.count,
       land: this.terrain.landArea,
+      forest: this.terrain.forestArea,
+      raining: this.rainHeld,
+      intro: this.intro,
       hour: this.hour(),
       palette: this.palette,
       pattern: this.pattern,

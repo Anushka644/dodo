@@ -82,7 +82,7 @@ export class Renderer {
     // the heightmap: half floats filter linearly everywhere WebGL2 runs
     this.height = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_2D, this.height);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.R16F, N, N, 0, gl.RED, gl.FLOAT, null);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RG16F, N, N, 0, gl.RG, gl.FLOAT, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -92,17 +92,23 @@ export class Renderer {
     this.fbo = gl.createFramebuffer()!;
   }
 
-  /** upload the changed part of the heightmap */
-  uploadHeight(h: Float32Array, rect: [number, number, number, number]) {
+  /** upload the changed part of the land: height in R, vegetation in G */
+  uploadLand(h: Float32Array, veg: Float32Array, rect: [number, number, number, number]) {
     const gl = this.gl;
     const [x0, y0, x1, y1] = rect;
     const w = x1 - x0 + 1;
     const hh = y1 - y0 + 1;
-    const sub = new Float32Array(w * hh);
-    for (let j = 0; j < hh; j++) sub.set(h.subarray((y0 + j) * N + x0, (y0 + j) * N + x0 + w), j * w);
+    const sub = new Float32Array(w * hh * 2);
+    for (let j = 0; j < hh; j++) {
+      for (let i = 0; i < w; i++) {
+        const k = (y0 + j) * N + x0 + i;
+        sub[(j * w + i) * 2] = h[k];
+        sub[(j * w + i) * 2 + 1] = veg[k];
+      }
+    }
     gl.bindTexture(gl.TEXTURE_2D, this.height);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, hh, gl.RED, gl.FLOAT, sub);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x0, y0, w, hh, gl.RG, gl.FLOAT, sub);
   }
 
   /** canvas in device pixels; the world renders at canvas / px */

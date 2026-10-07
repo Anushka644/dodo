@@ -78,6 +78,52 @@ class IslandSound {
     this.quake.filter.frequency.setTargetAtTime(dir > 0 ? 170 : 110, t, 0.1);
   }
 
+  private rainLoop: { src: AudioBufferSourceNode; filter: BiquadFilterNode; gain: GainNode } | null = null;
+
+  /** call every frame with the rain's strength */
+  rain(amount: number) {
+    const a = sound.audio;
+    if (!a) return;
+    if (!this.rainLoop && amount > 0.01) {
+      const { ctx, master, noise } = a;
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'highpass';
+      filter.frequency.value = 900;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(filter).connect(gain).connect(master);
+      src.start();
+      this.rainLoop = { src, filter, gain };
+    }
+    if (this.rainLoop) this.rainLoop.gain.gain.setTargetAtTime(amount * amount * 0.12, a.ctx.currentTime, 0.2);
+  }
+
+  /** thunder rolls in after the flash; further away, later and softer */
+  thunder(delay: number) {
+    const a = sound.audio;
+    if (!a) return;
+    const { ctx, master, noise } = a;
+    const t = ctx.currentTime + delay;
+    const src = ctx.createBufferSource();
+    src.buffer = noise;
+    src.playbackRate.value = 0.35;
+    const f = ctx.createBiquadFilter();
+    f.type = 'lowpass';
+    f.frequency.setValueAtTime(420, t);
+    f.frequency.exponentialRampToValueAtTime(90, t + 2.2);
+    const g = ctx.createGain();
+    const loud = 0.5 / (1 + delay);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(loud, t + 0.06);
+    g.gain.exponentialRampToValueAtTime(loud * 0.4, t + 0.5);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 2.6);
+    src.connect(f).connect(g).connect(master);
+    src.start(t, Math.random() * 0.5, 2.8);
+  }
+
   /** an egg cracks somewhere on the island */
   hatch() {
     const a = sound.audio;

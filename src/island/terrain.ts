@@ -39,8 +39,17 @@ function seabed(x: number, z: number) {
   return -0.32 - 0.5 * Math.min(1, Math.max(0, (r - 2.2) / 3.4)) - 0.05 * fbm(x * 0.9, z * 0.9);
 }
 
+const smooth = (a: number, b: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
 export class Terrain {
   readonly h = new Float32Array(N * N);
+  /** vegetation 0..1: bare rock and sand until rain lets the forest creep in */
+  readonly veg = new Float32Array(N * N);
+  private vegNext = new Float32Array(N * N);
+  private forestSum = 0;
   /** cells changed since the last upload: [x0, y0, x1, y1] or null */
   dirty: [number, number, number, number] | null = [0, 0, N - 1, N - 1];
   private landCells = 0;
@@ -135,6 +144,45 @@ export class Terrain {
   private markDirty(i0: number, j0: number, i1: number, j1: number) {
     const d = this.dirty;
     this.dirty = d ? [Math.min(d[0], i0), Math.min(d[1], j0), Math.max(d[2], i1), Math.max(d[3], j1)] : [i0, j0, i1, j1];
+  }
+
+  /**
+   * Forests spread from forest. Rain makes them grow; a few seeds blow in on
+   * their own. Drowned land loses its trees, and nothing grows on the peaks.
+   */
+  grow(dt: number, rain: number) {
+    const H = this.h, V = this.veg, out = this.vegNext;
+    const wet = 0.035 + rain * 1.4;
+    let sum = 0;
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const k = j * N + i;
+        const h = H[k];
+        let v = V[k];
+        if (h <= SEA + 0.02 || h > 1.55) {
+          out[k] = v * Math.max(0, 1 - dt * 3);
+          continue;
+        }
+        const l = i > 0 ? k - 1 : k, r = i < N - 1 ? k + 1 : k, u = j > 0 ? k - N : k, d = j < N - 1 ? k + N : k;
+        const slope = Math.hypot(H[r] - H[l], H[d] - H[u]) / (2 * CELL);
+        const suit = smooth(0.03, 0.12, h) * (1 - smooth(1.05, 1.5, h)) * (1 - smooth(0.9, 1.8, slope));
+        const near = Math.max(V[l], V[r], V[u], V[d]);
+        const seed = 0.0025 + 0.9 * near;
+        v += dt * wet * suit * seed * (1 - v) * 1.6;
+        out[k] = v;
+        sum += v;
+      }
+    }
+    this.veg.set(out);
+    this.forestSum = sum;
+    this.vegDirty = true;
+  }
+
+  vegDirty = true;
+
+  /** forest cover, in square world units */
+  get forestArea() {
+    return this.forestSum * CELL * CELL;
   }
 
   countLand() {

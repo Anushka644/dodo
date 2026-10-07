@@ -158,7 +158,7 @@ button {
 .hint {
   position: fixed;
   left: 50%;
-  bottom: 86px;
+  bottom: 90px;
   transform: translateX(-50%);
   margin: 0;
   padding: 7px 14px;
@@ -176,6 +176,40 @@ button {
     opacity: 0;
     transform: translate(-50%, 6px);
   }
+}
+
+/* the opening card, printed over the clouds */
+.title {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  text-align: center;
+  pointer-events: none;
+  color: #121210;
+  mix-blend-mode: multiply;
+}
+
+.title-place {
+  font-size: 11px;
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+}
+
+.title-line {
+  margin-top: 14px;
+  font-family: var(--serif);
+  font-style: italic;
+  font-size: clamp(26px, 4.2vw, 46px);
+  line-height: 1.1;
+}
+
+.title-sub {
+  margin-top: 10px;
+  font-family: var(--sc);
+  font-size: 15px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
 }
 
 /* ------------------------------------------------------------ dock */
@@ -280,6 +314,33 @@ button {
   text-align: center;
 }
 
+.rain {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 16px;
+  background: var(--ink);
+  color: var(--fg);
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  pointer-events: auto;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  transition: background 150ms, color 150ms;
+}
+
+.rain:hover {
+  background: rgba(10, 10, 9, 0.8);
+}
+
+.rain.is-on {
+  background: var(--lime);
+  color: #0a0a09;
+}
+
 /* ------------------------------------------------------------ toast */
 
 .toast {
@@ -360,11 +421,14 @@ button {
     flex-direction: column;
     align-items: stretch;
   }
+  .rain {
+    justify-content: center;
+  }
   .group {
     justify-content: space-between;
   }
   .hint {
-    bottom: 120px;
+    bottom: 170px;
     white-space: normal;
     width: calc(100vw - 28px);
     text-align: center;

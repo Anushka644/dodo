@@ -23,7 +23,11 @@ uniform vec4 uBrush;        // x, z, radius, strength (−1 carve … 1 raise; 0
 uniform float uBrushOn;     // 0..1 hover/press visibility
 uniform vec4 uDodo[12];     // x, y, z, heading
 uniform vec4 uDodoAnim[12]; // walk phase, bob, wing flap, alive (0 = unused)
-uniform sampler2D tHeight;
+uniform sampler2D tHeight;  // r: height, g: vegetation
+uniform float uRain;        // 0..1
+uniform float uFlash;       // lightning, 0..1
+uniform float uCloud;       // cloud cover 0..1
+uniform float uIntro;       // 0 → 1 opening shot
 
 out vec4 outData;
 
@@ -71,27 +75,31 @@ float seabed(vec2 xz) {
   return -0.32 - 0.5 * clamp((r - 2.2) / 3.4, 0.0, 1.0) - 0.05 * fbm3(xz * 0.9);
 }
 
-float baseHeight(vec2 xz) {
+vec2 land(vec2 xz) {
   vec2 uv = (xz + WORLD * 0.5) / WORLD;
-  if (any(lessThan(uv, vec2(0.002))) || any(greaterThan(uv, vec2(0.998)))) return seabed(xz);
-  return textureLod(tHeight, uv, 0.0).r;
+  if (any(lessThan(uv, vec2(0.002))) || any(greaterThan(uv, vec2(0.998)))) return vec2(seabed(xz), 0.0);
+  return textureLod(tHeight, uv, 0.0).rg;
 }
 
-// how much forest wants to grow here: above the beach, below the bare peaks, in patches
-float forestDensity(vec2 xz, float h) {
-  float band = smoothstep(0.1, 0.22, h) * (1.0 - smoothstep(1.25, 1.7, h));
-  float patches = smoothstep(0.38, 0.62, fbm3(xz * 1.1 + 4.0));
-  return band * patches;
+float baseHeight(vec2 xz) {
+  return land(xz).r;
+}
+
+// the forest the rain has grown, broken into clumps so it reads as trees
+float forestDensity(vec2 xz, float veg) {
+  float clumps = smoothstep(0.25, 0.75, vnoise(xz * 7.0) * 0.6 + vnoise(xz * 2.3) * 0.4 + veg * 0.6 - 0.3);
+  return clamp(veg * 1.3, 0.0, 1.0) * clumps;
 }
 
 // full height including rocky detail and tree canopies
 float height(vec2 xz, out float forest) {
-  float h = baseHeight(xz);
+  vec2 hv = land(xz);
+  float h = hv.r;
   float land = smoothstep(-0.05, 0.25, h);
   h += (fbm3(xz * 2.6) - 0.5) * 0.09 * land;
   // rock grows craggier with altitude
   h += (vnoise(xz * 9.0) - 0.5) * 0.04 * smoothstep(0.6, 1.6, h);
-  forest = forestDensity(xz, h);
+  forest = forestDensity(xz, hv.g);
   // canopies: bumpy crowns that read as trees once dithered
   float crowns = vnoise(xz * 34.0) * 0.6 + vnoise(xz * 71.0) * 0.4;
   h += forest * (0.035 + 0.05 * crowns);
@@ -244,9 +252,9 @@ float sunUp() {
 }
 
 float clouds(vec2 xz) {
-  vec2 p = xz * 0.16 + vec2(uTime * 0.012, uTime * 0.004);
+  vec2 p = xz * 0.16 + vec2(uTime * 0.012, uTime * 0.004) * (1.0 + uRain * 3.0);
   float c = fbm(p);
-  return smoothstep(0.52, 0.78, c);
+  return smoothstep(0.56 - 0.36 * uCloud, 0.8 - 0.25 * uCloud, c);
 }
 
 // sky brightness (the dither pass turns tone into ink)
@@ -305,8 +313,8 @@ float cloudShadow(vec3 p) {
 }
 
 float lightAmount() {
-  // the sun, then the moon: a dim silver light from the opposite sky
-  return mix(0.16, 1.0, sunUp());
+  // the sun, then the moon: a dim silver light from the opposite sky; storms dim both
+  return mix(0.16, 1.0, sunUp()) * (1.0 - 0.5 * uRain);
 }
 
 vec3 lightDir() {
@@ -387,7 +395,8 @@ void main() {
     float sand = 1.0 - smoothstep(0.03, 0.09, p.y);
     float rock = smoothstep(0.25, 0.5, slope) + smoothstep(1.2, 1.7, p.y) * 0.6;
     alb = mix(0.55, 0.88, sand);
-    alb = mix(alb, 0.24, forestHere * (1.0 - sand));
+    // canopies catch light on their tops and keep shadow beneath
+    alb = mix(alb, 0.3 + 0.12 * vnoise(p.xz * 60.0), forestHere * (1.0 - sand));
     alb = mix(alb, 0.5, clamp(rock, 0.0, 1.0) * (1.0 - sand));
     // wet sand just above the waterline
     alb *= 1.0 - 0.35 * smoothstep(0.035, 0.0, p.y);
@@ -453,6 +462,27 @@ void main() {
     tone = mix(tone, 1.0, ring * (0.55 - 0.3 * press));
     accent = max(accent, ring * press);
   }
+
+  // rain: slanted streaks, a few print-dots long, falling at different speeds
+  if (uRain > 0.01) {
+    vec2 q = frag + vec2(frag.y * 0.22, 0.0);
+    float col = floor(q.x / 2.0);
+    float r = hash12(vec2(col, 3.7));
+    float y = fract(frag.y / uRes.y * (1.6 + r) + uTime * (1.1 + r * 0.8) + r * 7.0);
+    float streak = step(1.0 - uRain * 0.62, hash12(vec2(col, floor(frag.y / uRes.y * (1.6 + r) + uTime * (1.1 + r * 0.8) + r * 7.0))));
+    streak *= smoothstep(0.0, 0.02, y) * (1.0 - smoothstep(0.02, 0.13, y));
+    tone = mix(tone, tone * 0.45 + 0.5, streak * 0.9);
+    tone *= 1.0 - 0.18 * uRain;
+  }
+  // the opening: a veil of cloud the camera falls through
+  if (uIntro < 1.0) {
+    float veil = smoothstep(0.75, 0.15, uIntro);
+    float c = fbm(frag / uRes.y * 3.0 + vec2(uTime * 0.05, uIntro * 6.0));
+    float cl = smoothstep(0.35 - veil * 0.4, 0.75 - veil * 0.3, c);
+    tone = mix(tone, 0.95, cl * veil * 1.2);
+  }
+  // lightning lights everything at once
+  tone = mix(tone, 1.1, uFlash * (mat < 0.1 ? 0.9 : 0.55));
 
   outData = vec4(clamp(tone, 0.0, 1.6) / 1.6, depth, mat, clamp(accent, 0.0, 1.0));
 }
