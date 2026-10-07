@@ -23,11 +23,13 @@ uniform vec4 uBrush;        // x, z, radius, strength (−1 carve … 1 raise; 0
 uniform float uBrushOn;     // 0..1 hover/press visibility
 uniform vec4 uDodo[12];     // x, y, z, heading
 uniform vec4 uDodoAnim[12]; // walk phase, bob, wing flap, alive (0 = unused)
-uniform sampler2D tHeight;  // r: height, g: vegetation
+uniform sampler2D tHeight;  // r: height, g: vegetation, b: lava heat, a: rivers
 uniform float uRain;        // 0..1
 uniform float uFlash;       // lightning, 0..1
 uniform float uCloud;       // cloud cover 0..1
 uniform float uIntro;       // 0 → 1 opening shot
+uniform vec4 uVent[4];      // smoke over new land: x, base y, z, strength
+uniform vec4 uBird[16];     // seabirds: x, y, z, wing (> 5: away at sea, not drawn)
 
 out vec4 outData;
 
@@ -75,10 +77,10 @@ float seabed(vec2 xz) {
   return -0.32 - 0.5 * clamp((r - 2.2) / 3.4, 0.0, 1.0) - 0.05 * fbm3(xz * 0.9);
 }
 
-vec2 land(vec2 xz) {
+vec4 land(vec2 xz) {
   vec2 uv = (xz + WORLD * 0.5) / WORLD;
-  if (any(lessThan(uv, vec2(0.002))) || any(greaterThan(uv, vec2(0.998)))) return vec2(seabed(xz), 0.0);
-  return textureLod(tHeight, uv, 0.0).rg;
+  if (any(lessThan(uv, vec2(0.002))) || any(greaterThan(uv, vec2(0.998)))) return vec4(seabed(xz), 0.0, 0.0, 0.0);
+  return textureLod(tHeight, uv, 0.0);
 }
 
 float baseHeight(vec2 xz) {
@@ -93,13 +95,16 @@ float forestDensity(vec2 xz, float veg) {
 
 // full height including rocky detail and tree canopies
 float height(vec2 xz, out float forest) {
-  vec2 hv = land(xz);
+  vec4 hv = land(xz);
   float h = hv.r;
   float land = smoothstep(-0.05, 0.25, h);
   h += (fbm3(xz * 2.6) - 0.5) * 0.09 * land;
   // rock grows craggier with altitude
   h += (vnoise(xz * 9.0) - 0.5) * 0.04 * smoothstep(0.6, 1.6, h);
-  forest = forestDensity(xz, hv.g);
+  // rivers sit in their beds, and no trees grow in them
+  float river = smoothstep(0.2, 0.7, hv.a);
+  h -= river * 0.015 * land;
+  forest = forestDensity(xz, hv.g) * (1.0 - river);
   // canopies: bumpy crowns that read as trees once dithered
   float crowns = vnoise(xz * 34.0) * 0.6 + vnoise(xz * 71.0) * 0.4;
   h += forest * (0.035 + 0.05 * crowns);
@@ -138,7 +143,7 @@ float smin(float a, float b, float k) {
   return mix(b, a, h) - k * h * (1.0 - h);
 }
 
-const float DODO = 1.9; // dodos are drawn larger than life, so you can find them
+const float DODO = 1.6; // dodos are drawn larger than life, so you can find them
 
 // a dodo in its own space: feet at the origin, facing +z. m = part id.
 float dodoSDF(vec3 p, vec4 anim, out float m) {
@@ -269,6 +274,10 @@ float skyTone(vec3 rd) {
   tone += exp(-max(rd.y, 0.0) * 10.0) * 0.18 * (day + dusk * 0.6);
   // the sun itself, crisp
   tone += smoothstep(0.9993, 0.9997, sd) * 2.0 * smoothstep(-0.05, 0.02, uSun.y);
+  // the moon rises opposite the sun
+  vec3 moon = normalize(vec3(-uSun.x, max(0.35, -uSun.y), -uSun.z));
+  float md = dot(rd, moon);
+  tone += (smoothstep(0.9991, 0.9994, md) * 0.9 + pow(max(md, 0.0), 40.0) * 0.12) * (1.0 - day);
   // clouds on a high plane
   if (rd.y > 0.02) {
     vec3 cp = rd * (7.0 / rd.y);
@@ -314,11 +323,112 @@ float cloudShadow(vec3 p) {
 
 float lightAmount() {
   // the sun, then the moon: a dim silver light from the opposite sky; storms dim both
-  return mix(0.16, 1.0, sunUp()) * (1.0 - 0.5 * uRain);
+  return mix(0.3, 1.0, sunUp()) * (1.0 - 0.5 * uRain);
 }
 
 vec3 lightDir() {
   return uSun.y > -0.05 ? uSun : normalize(vec3(-uSun.x, max(0.35, -uSun.y), -uSun.z));
+}
+
+// ---------------------------------------------------------------- smoke
+
+// a plume rises from new land, leaning downwind and billowing as it climbs
+float plumeTop(vec4 v) {
+  return 0.45 + 2.0 * v.w;
+}
+
+vec2 plumeLean(float hgt) {
+  return vec2(0.6, 0.22) * hgt * hgt * 0.24;
+}
+
+float plumeDensity(vec3 p, vec4 v) {
+  float hgt = p.y - v.y;
+  float top = plumeTop(v);
+  if (hgt < 0.0 || hgt > top) return 0.0;
+  vec2 q = p.xz - v.xz - plumeLean(hgt);
+  // it spreads as it rises, and mushrooms out near the top
+  float r = 0.08 + 0.3 * hgt + 0.25 * smoothstep(top * 0.5, top, hgt);
+  // billows: big lumps rolling upward, smaller ones on them
+  vec2 b = vec2(dot(q, vec2(0.8, 0.6)), dot(q, vec2(-0.6, 0.8))) / (0.5 + hgt * 0.6);
+  float lumps = fbm3(vec2(b.x * 2.2 + 3.0, (hgt - uTime * 0.32) * 2.4) + b.y * 1.3);
+  // rounded on top, like a cumulus, rather than cut flat
+  float k = hgt / top;
+  float d = length(q) / r + (lumps - 0.5) * 1.6 + k * k * k * 1.3;
+  return smoothstep(1.05, 0.35, d) * smoothstep(0.0, 0.05, hgt) * v.w;
+}
+
+// march every plume this ray passes through; returns (transmittance, light, glow)
+vec3 traceSmoke(vec3 ro, vec3 rd, float tEnd, vec3 L) {
+  float T = 1.0, lit = 0.0, glow = 0.0;
+  for (int i = 0; i < 4; i++) {
+    vec4 v = uVent[i];
+    if (v.w < 0.01) continue;
+    float top = plumeTop(v);
+    vec3 c = vec3(v.x, v.y, v.z) + vec3(plumeLean(top * 0.6).x, top * 0.5, plumeLean(top * 0.6).y);
+    float R = top * 0.6 + 0.9;
+    vec3 oc = ro - c;
+    float b = dot(oc, rd);
+    float disc = b * b - dot(oc, oc) + R * R;
+    if (disc < 0.0) continue;
+    float s = sqrt(disc);
+    float t0 = max(-b - s, 0.0);
+    float t1 = min(-b + s, tEnd);
+    if (t1 <= t0) continue;
+    float dt = (t1 - t0) / 14.0;
+    float t = t0 + dt * hash12(gl_FragCoord.xy + float(i) * 7.0);
+    // steam over the sea is white; ash over land is grey
+    float alb = mix(0.98, 0.6, smoothstep(0.05, 0.5, v.y));
+    for (int k = 0; k < 14; k++) {
+      vec3 p = ro + rd * t;
+      float d = plumeDensity(p, v);
+      if (d > 0.002) {
+        float a = 1.0 - exp(-d * dt * 9.0);
+        float self = plumeDensity(p + L * 0.2, v);
+        float shade = 0.45 + 0.55 * exp(-self * 3.0);
+        lit += T * a * alb * shade;
+        // lava lights its smoke from below; steam off the sea barely glows
+        glow += T * a * exp(-(p.y - v.y) * 2.2) * v.w * mix(0.2, 1.0, smoothstep(0.02, 0.2, v.y));
+        T *= 1.0 - a;
+        if (T < 0.03) break;
+      }
+      t += dt;
+    }
+  }
+  return vec3(T, lit, glow);
+}
+
+// ---------------------------------------------------------------- birds
+
+float sdSegment(vec2 p, vec2 a, vec2 b) {
+  vec2 pa = p - a, ba = b - a;
+  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
+  return length(pa - ba * h);
+}
+
+// seabirds, as an engraver draws them: a little "M" of ink, wings beating
+float birds(vec2 frag, vec3 ro, float sceneT) {
+  float ink = 0.0;
+  float aspect = uRes.x / uRes.y;
+  for (int i = 0; i < 16; i++) {
+    vec4 b = uBird[i];
+    if (b.w > 5.0 || (b.x == 0.0 && b.y == 0.0 && b.z == 0.0)) continue;
+    vec3 d = b.xyz - ro;
+    float z = dot(d, uCamFwd);
+    if (z < 0.3 || length(d) > sceneT) continue;
+    vec2 ndc = vec2(dot(d, uCamRight) / (z * uTanFov * aspect), dot(d, uCamUp) / (z * uTanFov));
+    vec2 c = (ndc * 0.5 + 0.5) * uRes;
+    // wingspan in print dots, never smaller than a few
+    float span = clamp(0.085 / (z * uTanFov * 2.0) * uRes.y, 2.2, 11.0);
+    vec2 o = frag - c;
+    if (abs(o.x) > span * 1.2 || abs(o.y) > span) continue;
+    vec2 u = vec2(abs(o.x), o.y) / span;
+    float w = b.w; // −1 down … 1 up
+    vec2 elbow = vec2(0.42, 0.18 + 0.35 * w);
+    vec2 tip = vec2(1.0, -0.05 + 0.75 * w);
+    float dist = min(sdSegment(u, vec2(0.0), elbow), sdSegment(u, elbow, tip)) * span;
+    ink = max(ink, smoothstep(0.85, 0.35, dist));
+  }
+  return ink;
 }
 
 // ---------------------------------------------------------------- main
@@ -332,7 +442,7 @@ void main() {
   float tone = 0.0;
   float accent = 0.0;
   float depth = 1.0;
-  float mat = 0.0; // 0 sky, 0.25 water, 0.5 land, 0.75 dodo (for outlines)
+  float mat = 0.0; // 0 sky, 0.08 smoke, 0.25 water, 0.5 land, 0.6 forest, 0.75 dodo (outlines and inks)
 
   // --- march the land (only while the ray is below the tallest mountain)
   float tLand = 1e9;
@@ -386,26 +496,55 @@ void main() {
     mat = 0.75;
   } else if (tLand < tSea && tLand < tMax) {
     vec3 p = ro + rd * tLand;
+    vec4 here = land(p.xz);
     vec3 n = terrainNormal(p.xz, tLand);
     float sh = softShadow(p + n * 0.004, L) * cloudShadow(p);
     float diff = max(dot(n, L), 0.0);
     float slope = 1.0 - n.y;
     // sand, grass, forest, rock: each a different tone, so the island reads as a map
-    float alb = 0.62;
     float sand = 1.0 - smoothstep(0.03, 0.09, p.y);
-    float rock = smoothstep(0.25, 0.5, slope) + smoothstep(1.2, 1.7, p.y) * 0.6;
-    alb = mix(0.55, 0.88, sand);
-    // canopies catch light on their tops and keep shadow beneath
-    alb = mix(alb, 0.3 + 0.12 * vnoise(p.xz * 60.0), forestHere * (1.0 - sand));
-    alb = mix(alb, 0.5, clamp(rock, 0.0, 1.0) * (1.0 - sand));
+    float rock = clamp(smoothstep(0.25, 0.5, slope) + smoothstep(1.2, 1.7, p.y) * 0.6, 0.0, 1.0);
+    float alb = mix(0.62, 0.9, sand);
+    // canopies: lit crowns with dark gaps between them
+    float crown = vnoise(p.xz * 60.0);
+    alb = mix(alb, 0.36 + 0.24 * crown, forestHere * (1.0 - sand));
+    alb = mix(alb, 0.5, rock * (1.0 - sand) * (1.0 - forestHere));
+    // new rock is black while it's still warm
+    float heat = here.b;
+    alb *= 1.0 - 0.7 * smoothstep(0.0, 0.4, heat);
     // wet sand just above the waterline
     alb *= 1.0 - 0.35 * smoothstep(0.035, 0.0, p.y);
-    float ao = mix(0.55, 1.0, smoothstep(-0.3, 0.6, n.y));
-    tone = alb * (0.16 * ao + 0.95 * diff * sh * Li);
+    float ao = mix(0.5, 1.0, smoothstep(-0.3, 0.6, n.y));
+    // light from the whole sky, so the shaded side of the island still has form
+    float fill = (0.2 + 0.1 * n.y) * ao * mix(0.4, 1.0, sunUp()) * (1.0 - 0.35 * uRain);
+    tone = alb * (fill + 0.9 * diff * sh * Li);
+    mat = forestHere > 0.45 && sand < 0.5 ? 0.6 : 0.5;
+    // rivers: a ribbon of sky laid across the land
+    const float CELL = WORLD / 256.0;
+    float wet = max(here.a, max(max(land(p.xz + vec2(CELL * 0.6, 0.0)).a, land(p.xz - vec2(CELL * 0.6, 0.0)).a), max(land(p.xz + vec2(0.0, CELL * 0.6)).a, land(p.xz - vec2(0.0, CELL * 0.6)).a)));
+    float riv = smoothstep(0.3, 0.55, wet);
+    if (riv > 0.0) {
+      vec3 rr = reflect(rd, vec3(0.0, 1.0, 0.0));
+      float wt = 0.3 + 0.55 * skyTone(normalize(vec3(rr.x, max(rr.y, 0.05), rr.z)));
+      wt += (vnoise(p.xz * 40.0 + vec2(uTime * 1.7, uTime * 0.6)) - 0.5) * 0.2;
+      tone = mix(tone, wt * (0.35 + 0.65 * Li), riv);
+      if (riv > 0.5) mat = 0.25;
+    }
+    // lava: the cracks in new rock glow, and the hottest of it pools
+    if (heat > 0.004) {
+      vec2 q = p.xz * 6.0;
+      float c1 = abs(vnoise(q + uTime * 0.1) - 0.5);
+      float c2 = abs(vnoise(q * 2.3 - 11.0 - uTime * 0.05) - 0.5);
+      // cracks widen as it gets hotter; only the very hottest pools
+      float crack = smoothstep(0.03 + 0.09 * heat, 0.0, min(c1, c2 * 1.3));
+      float pool = smoothstep(0.8, 1.0, heat) * smoothstep(0.45, 0.75, vnoise(q * 0.6 + 4.0));
+      float g = heat * crack + pool;
+      accent = max(accent, clamp(g * 1.1, 0.0, 0.92));
+      tone += g * 0.25;
+    }
     // atmospheric haze
     tone = mix(tone, skyTone(normalize(vec3(rd.x, 0.02, rd.z))), smoothstep(14.0, 40.0, tLand));
     depth = tLand / tMax;
-    mat = 0.5;
   } else if (tSea < tMax) {
     vec3 p = ro + rd * tSea;
     float floorH = baseHeight(p.xz);
@@ -439,6 +578,9 @@ void main() {
     float foamNoise = vnoise(p.xz * 22.0 + vec2(uTime * 0.9, 0.0)) * 0.6 + vnoise(p.xz * 47.0 - uTime * 1.3) * 0.4;
     float pulse = 0.5 + 0.5 * sin(uTime * 1.6 - wdepth * 60.0);
     float foam = clamp(shore * (0.55 + 0.6 * foamNoise * pulse) + reefLine * smoothstep(0.45, 0.75, foamNoise) * 0.9, 0.0, 1.0);
+    // the sea boils over new land coming up beneath it
+    float boil = land(p.xz).b * smoothstep(0.3, 0.0, wdepth);
+    foam = max(foam, boil * smoothstep(0.35, 0.7, vnoise(p.xz * 30.0 + vec2(0.0, uTime * 3.0))));
     tone = mix(tone, 0.92 * (0.3 + 0.7 * Li), foam);
     // at night the surf glows: bioluminescence, in the only colour we have
     accent = foam * (1.0 - sunUp()) * 0.95;
@@ -451,6 +593,25 @@ void main() {
     tone += st * 0.9;
     depth = 1.0;
     mat = 0.0;
+  }
+
+  // smoke and steam over new land, lit from below by the lava at night
+  if (uVent[0].w + uVent[1].w + uVent[2].w + uVent[3].w > 0.01) {
+    float tEnd = mat < 0.01 ? tMax : depth * tMax;
+    vec3 sm = traceSmoke(ro, rd, tEnd, L);
+    if (sm.x < 0.999) {
+      float lightOn = 0.25 + 0.75 * Li;
+      tone = tone * sm.x + sm.y * lightOn;
+      accent = max(accent * sm.x, clamp(sm.z * (0.25 + 0.55 * (1.0 - sunUp())), 0.0, 0.9));
+      if (sm.x < 0.5) mat = 0.08;
+    }
+  }
+
+  // birds over everything but the smoke they fly behind
+  float bird = birds(frag, ro, mat < 0.01 ? 1e9 : depth * tMax);
+  if (bird > 0.5) {
+    tone = mix(tone, 0.03, bird);
+    mat = 0.08;
   }
 
   // the brush: a ring where your hand will push or pull the land
@@ -480,6 +641,7 @@ void main() {
     float c = fbm(frag / uRes.y * 3.0 + vec2(uTime * 0.05, uIntro * 6.0));
     float cl = smoothstep(0.35 - veil * 0.4, 0.75 - veil * 0.3, c);
     tone = mix(tone, 0.95, cl * veil * 1.2);
+    if (cl * veil > 0.5) mat = 0.08;
   }
   // lightning lights everything at once
   tone = mix(tone, 1.1, uFlash * (mat < 0.1 ? 0.9 : 0.55));

@@ -1,6 +1,7 @@
 import { Renderer } from './renderer';
 import { Terrain, SEA } from './terrain';
 import { Flock, MAX_DODOS } from './dodos';
+import { Birds } from './birds';
 import { PALETTES, skyPalette, type Palette } from './palettes';
 import { islandSound } from './sound';
 import { sound } from '../sound';
@@ -46,6 +47,10 @@ export class IslandEngine {
   private renderer: Renderer;
   readonly terrain = new Terrain();
   readonly flock: Flock;
+  readonly birds = new Birds();
+  private birdData = new Float32Array(64);
+  private nest: [number, number] = [0.15, 0.1];
+  private cryAt = 8;
 
   // camera, orbiting a point on the island
   private yaw = 0.75;
@@ -69,6 +74,11 @@ export class IslandEngine {
   private hatched = 0;
   private landTimer = 0;
   private growTimer = 0;
+  private waterTimer = 0;
+  private routeTimer = 0;
+  /** smoke and steam over new land: x, base y, z, strength (four at most) */
+  private vents: { x: number; y: number; z: number; s: number; live: boolean }[] = [];
+  private glow = 0;
   // weather
   private rainHeld = false;
   rain = 0;
@@ -304,6 +314,7 @@ export class IslandEngine {
     this.brush.on += ((hit ? 1 : 0) - this.brush.on) * Math.min(1, dt * 10);
     const want = sculpting ? (this.drag && this.drag.kind === 'sculpt' && this.drag.carve ? -1 : 1) : 0;
     this.brush.strength += (want - this.brush.strength) * Math.min(1, dt * 12);
+    const raising = sculpting && !!hit && this.drag?.kind === 'sculpt' && !this.drag.carve;
     if (sculpting && hit && this.drag?.kind === 'sculpt') {
       const rate = this.drag.carve ? -0.9 : 0.75;
       this.terrain.raise(this.brush.x, this.brush.z, this.brush.r, rate, dt);
@@ -311,6 +322,7 @@ export class IslandEngine {
       this.idle = 0;
     }
     islandSound.rumble(sculpting && hit ? (this.drag?.kind === 'sculpt' && this.drag.carve ? -1 : 1) : 0);
+    this.stepVents(dt, raising);
 
     // weather: rain gathers quickly and clears slowly; storms throw lightning
     this.rain += ((this.rainHeld ? 1 : 0) - this.rain) * Math.min(1, dt * (this.rainHeld ? 2.2 : 0.5));
@@ -332,12 +344,25 @@ export class IslandEngine {
       this.growTimer = 0.25;
       this.terrain.grow(0.25, this.rain);
     }
+    // water finds its way down to the sea, and lava cools (ten times a second)
+    this.waterTimer -= dt;
+    this.routeTimer -= dt;
+    if (this.waterTimer <= 0) {
+      this.waterTimer = 0.1;
+      if (this.terrain.reshaped && this.routeTimer <= 0) {
+        this.terrain.route();
+        this.routeTimer = 0.4;
+      }
+      this.terrain.flow(0.1, this.rain);
+      this.glow = this.terrain.cool(0.1);
+    }
+    islandSound.lava(raising ? 1 : 0, this.glow);
     if (this.terrain.vegDirty) {
-      this.renderer.uploadLand(this.terrain.h, this.terrain.veg, [0, 0, 255, 255]);
+      this.renderer.uploadLand(this.terrain, [0, 0, 255, 255]);
       this.terrain.vegDirty = false;
       this.terrain.dirty = null;
     } else if (this.terrain.dirty) {
-      this.renderer.uploadLand(this.terrain.h, this.terrain.veg, this.terrain.dirty);
+      this.renderer.uploadLand(this.terrain, this.terrain.dirty);
       this.terrain.dirty = null;
     }
 
@@ -346,6 +371,7 @@ export class IslandEngine {
     if (this.landTimer <= 0) {
       this.landTimer = 0.4;
       this.terrain.countLand();
+      this.nest = this.terrain.centre;
       const area = this.terrain.forestArea;
       while (this.hatched < HATCH_AT.length && area > HATCH_AT[this.hatched] && this.flock.count < MAX_DODOS) {
         const spot = this.flock.spot();
@@ -356,12 +382,69 @@ export class IslandEngine {
         this.onHatch?.(this.flock.count);
       }
     }
-    this.flock.step(dt);
+    if (this.flock.step(dt) > 0) islandSound.honk(1.15 + Math.random() * 0.2);
+
+    // seabirds come to nest once there's forest, one for every patch of it
+    const day = Math.min(1, Math.max(0, (this.sun[1] + 0.1) / 0.3));
+    this.birdData = this.birds.step(dt, t, Math.floor(this.terrain.forestArea * 1.4), this.nest, day);
+    this.cryAt -= dt;
+    if (this.cryAt <= 0) {
+      this.cryAt = 5 + Math.random() * 12;
+      if (this.birds.count > 0 && day > 0.5) islandSound.cry(this.dist);
+    }
 
     islandSound.ambience(this.dist, this.sun[1]);
 
     this.render(t);
     this.emitHud(now);
+  }
+
+  /** a plume rises where you push land up; it drifts and thins after you let go */
+  private stepVents(dt: number, raising: boolean) {
+    let live = this.vents.find((v) => v.live);
+    if (raising) {
+      if (!live || Math.hypot(live.x - this.brush.x, live.z - this.brush.z) > this.brush.r * 1.6) {
+        if (live) live.live = false;
+        live = { x: this.brush.x, y: 0, z: this.brush.z, s: 0, live: true };
+        this.addVent(live);
+      }
+      const k = 1 - Math.exp(-dt * 5);
+      live.x += (this.brush.x - live.x) * k;
+      live.z += (this.brush.z - live.z) * k;
+      live.s = Math.min(1, live.s + dt * 0.9);
+    } else if (live) {
+      live.live = false;
+    }
+    // where lava pours into the sea, steam boils up
+    const st = this.terrain.steam;
+    if (st) {
+      let v = this.vents.find((v) => !v.live && Math.hypot(v.x - st[0], v.z - st[1]) < 0.7);
+      if (!v) this.addVent((v = { x: st[0], y: 0, z: st[1], s: 0, live: false }));
+      v.s = Math.min(0.75, Math.max(v.s, v.s + dt * 1.5 * st[2]));
+    }
+    for (const v of this.vents) {
+      v.y = this.terrain.surface(v.x, v.z);
+      if (!v.live) v.s -= dt * 0.16;
+    }
+    this.vents = this.vents.filter((v) => v.s > 0);
+  }
+
+  private addVent(v: IslandEngine['vents'][number]) {
+    this.vents.push(v);
+    if (this.vents.length > 4) {
+      // drop the faintest plume that isn't under your hand
+      let weakest = -1;
+      this.vents.forEach((o, i) => {
+        if (o !== v && !o.live && (weakest < 0 || o.s < this.vents[weakest].s)) weakest = i;
+      });
+      this.vents.splice(weakest < 0 ? 0 : weakest, 1);
+    }
+  }
+
+  private ventUniform() {
+    const out = new Float32Array(16);
+    this.vents.forEach((v, i) => out.set([v.x, v.y, v.z, v.s], i * 4));
+    return out;
   }
 
   private currentPalette(): Palette {
@@ -389,10 +472,13 @@ export class IslandEngine {
         uFlash: this.flash,
         uCloud: Math.max(this.cloud, (1 - this.intro) * 1.2),
         uIntro: this.intro,
+        uVent: this.ventUniform(),
+        uBird: this.birdData,
       },
       {
         uPx: this.canvas.width / this.renderer.worldSize[0],
         uPal: pal.inks.flat(),
+        uMids: pal.mids.flat(),
         uAccent: pal.accent,
         uPattern: this.pattern,
         uContrast: 1.15,

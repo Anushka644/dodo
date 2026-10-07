@@ -39,6 +39,62 @@ function seabed(x: number, z: number) {
   return -0.32 - 0.5 * Math.min(1, Math.max(0, (r - 2.2) / 3.4)) - 0.05 * fbm(x * 0.9, z * 0.9);
 }
 
+// the eight neighbours, and how much a drop counts for over each distance
+const DI = [1, -1, 0, 0, 1, 1, -1, -1];
+const DJ = [0, 0, 1, -1, 1, -1, 1, -1];
+const DW = [1, 1, 1, 1, Math.SQRT1_2, Math.SQRT1_2, Math.SQRT1_2, Math.SQRT1_2];
+
+/** a binary min-heap of cell indices, for the flood */
+class Heap {
+  private k: Int32Array;
+  private p: Float32Array;
+  size = 0;
+  constructor(cap: number) {
+    this.k = new Int32Array(cap);
+    this.p = new Float32Array(cap);
+  }
+  clear() {
+    this.size = 0;
+  }
+  top() {
+    return this.k[0];
+  }
+  topPriority() {
+    return this.p[0];
+  }
+  push(key: number, pr: number) {
+    const K = this.k, P = this.p;
+    let i = this.size++;
+    while (i > 0) {
+      const up = (i - 1) >> 1;
+      if (P[up] <= pr) break;
+      K[i] = K[up];
+      P[i] = P[up];
+      i = up;
+    }
+    K[i] = key;
+    P[i] = pr;
+  }
+  pop() {
+    const K = this.k, P = this.p;
+    const n = --this.size;
+    if (n <= 0) return;
+    const key = K[n], pr = P[n];
+    let i = 0;
+    for (;;) {
+      let c = 2 * i + 1;
+      if (c >= n) break;
+      if (c + 1 < n && P[c + 1] < P[c]) c++;
+      if (P[c] >= pr) break;
+      K[i] = K[c];
+      P[i] = P[c];
+      i = c;
+    }
+    K[i] = key;
+    P[i] = pr;
+  }
+}
+
 const smooth = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
   return t * t * (3 - 2 * t);
@@ -48,7 +104,21 @@ export class Terrain {
   readonly h = new Float32Array(N * N);
   /** vegetation 0..1: bare rock and sand until rain lets the forest creep in */
   readonly veg = new Float32Array(N * N);
+  /** fresh lava 0..1: where land has just been pushed up out of the earth */
+  readonly heat = new Float32Array(N * N);
+  /** running water 0..1: rivers the rain has found */
+  readonly river = new Float32Array(N * N);
   private vegNext = new Float32Array(N * N);
+  private acc = new Float32Array(N * N);
+  private recv = new Int32Array(N * N).fill(-1);
+  private filled = new Float32Array(N * N);
+  private seen = new Uint8Array(N * N);
+  private order = new Int32Array(N * N);
+  private landOrder = 0;
+  private heap = new Heap(N * N);
+  /** the shape of the land changed since the drainage was last worked out */
+  reshaped = true;
+  private hot: [number, number, number, number] | null = null;
   private forestSum = 0;
   /** cells changed since the last upload: [x0, y0, x1, y1] or null */
   dirty: [number, number, number, number] | null = [0, 0, N - 1, N - 1];
@@ -62,8 +132,9 @@ export class Terrain {
       }
     }
     // where the story starts: one rock, one dodo
-    this.raise(0.15, 0.1, 0.55, 0.42, 1);
+    this.raise(0.15, 0.1, 0.55, 0.42, 1, false);
     this.countLand();
+    this.route();
   }
 
   toWorld(i: number, j: number): [number, number] {
@@ -82,6 +153,14 @@ export class Terrain {
     return a + (b - a) * tx + (c - a) * tz + (a - b - c + d) * tx * tz;
   }
 
+  /** lava heat at the nearest cell */
+  heatAt(x: number, z: number) {
+    const i = Math.round((x + WORLD / 2) / CELL - 0.5);
+    const j = Math.round((z + WORLD / 2) / CELL - 0.5);
+    if (i < 0 || j < 0 || i >= N || j >= N) return 0;
+    return this.heat[j * N + i];
+  }
+
   /** the ground under a point, or the water if it's flooded */
   surface(x: number, z: number) {
     return Math.max(SEA, this.sample(x, z));
@@ -91,7 +170,7 @@ export class Terrain {
    * Push land up (amount > 0) or down (amount < 0) around a point. The brush
    * is a soft dome broken up by noise, so pressing twice never makes the same hill.
    */
-  raise(x: number, z: number, radius: number, amount: number, dt: number) {
+  raise(x: number, z: number, radius: number, amount: number, dt: number, molten = true) {
     const ci = (x + WORLD / 2) / CELL - 0.5;
     const cj = (z + WORLD / 2) / CELL - 0.5;
     const rc = Math.ceil((radius * 2.2) / CELL);
@@ -114,6 +193,8 @@ export class Terrain {
           // below the sea it rises fast (you're making land), above it slowly (you're making hills)
           const under = h < 0.04 ? 1.6 : 1;
           h += amount * dt * g * n * under * (0.15 + 0.85 * room * room * room);
+          // new land comes up molten at the heart of the push
+          if (molten) this.heat[k] = Math.min(1, this.heat[k] + dt * 5 * g * g * g * n);
         } else {
           h += amount * dt * g * n;
           h = Math.max(h, seabed(wx, wz) - 0.2);
@@ -122,7 +203,76 @@ export class Terrain {
       }
     }
     this.markDirty(i0, j0, i1, j1);
+    this.reshaped = true;
+    if (molten && amount > 0) {
+      const o = this.hot;
+      this.hot = o ? [Math.min(o[0], i0), Math.min(o[1], j0), Math.max(o[2], i1), Math.max(o[3], j1)] : [i0, j0, i1, j1];
+    }
   }
+
+  /**
+   * Lava runs down the drainage, a cell at a time, cooling as it goes; where
+   * it reaches the sea it boils it. Returns how much is still glowing.
+   */
+  cool(dt: number) {
+    const r = this.hot;
+    if (!r) return 0;
+    const H = this.h, R = this.recv, heat = this.heat, prev = this.heatPrev;
+    // grow the hot patch by a cell each way so the flow can leave it
+    const x0 = Math.max(0, r[0] - 1), y0 = Math.max(0, r[1] - 1), x1 = Math.min(N - 1, r[2] + 1), y1 = Math.min(N - 1, r[3] + 1);
+    for (let j = y0; j <= y1; j++) for (let i = x0; i <= x1; i++) prev[j * N + i] = heat[j * N + i];
+    const k0 = Math.exp(-dt * 0.42);
+    let max = 0;
+    let steam = 0, sx = 0, sz = 0;
+    let bx0 = N, by0 = N, bx1 = -1, by1 = -1;
+    for (let j = y0; j <= y1; j++) {
+      for (let i = x0; i <= x1; i++) {
+        const k = j * N + i;
+        const v0 = prev[k];
+        if (v0 <= 0) continue;
+        // a molten cell spills into the one below it
+        const to = R[k];
+        if (v0 > 0.18 && to >= 0) {
+          const spill = v0 * 0.96;
+          if (H[to] <= SEA) {
+            if (spill > steam) {
+              steam = spill;
+              [sx, sz] = this.toWorld(to % N, (to - (to % N)) / N);
+            }
+            heat[to] = Math.max(heat[to], spill * 0.6);
+          } else if (heat[to] < spill) heat[to] = spill;
+          const ti = to % N, tj = (to - ti) / N;
+          if (ti < bx0) bx0 = ti;
+          if (ti > bx1) bx1 = ti;
+          if (tj < by0) by0 = tj;
+          if (tj > by1) by1 = tj;
+        }
+      }
+    }
+    for (let j = Math.min(y0, by0); j <= Math.max(y1, by1); j++) {
+      for (let i = Math.min(x0, bx0); i <= Math.max(x1, bx1); i++) {
+        const k = j * N + i;
+        let v = heat[k] * k0;
+        if (v < 0.003) v = 0;
+        heat[k] = v;
+        if (v > max) max = v;
+        if (v > 0) {
+          if (i < bx0) bx0 = i;
+          if (i > bx1) bx1 = i;
+          if (j < by0) by0 = j;
+          if (j > by1) by1 = j;
+        }
+      }
+    }
+    this.markDirty(Math.min(x0, bx0), Math.min(y0, by0), Math.max(x1, bx1), Math.max(y1, by1));
+    this.hot = max > 0 ? [bx0, by0, bx1, by1] : null;
+    this.steam = steam > 0.2 ? [sx, sz, steam] : null;
+    return max;
+  }
+
+  /** where lava is pouring into the sea this moment: x, z, strength */
+  steam: [number, number, number] | null = null;
+  private heatPrev = new Float32Array(N * N);
 
   /** soften a patch (used after heavy sculpting so ridges stay walkable) */
   relax(x: number, z: number, radius: number, strength: number) {
@@ -168,7 +318,9 @@ export class Terrain {
         const suit = smooth(0.03, 0.12, h) * (1 - smooth(1.05, 1.5, h)) * (1 - smooth(0.9, 1.8, slope));
         const near = Math.max(V[l], V[r], V[u], V[d]);
         const seed = 0.0025 + 0.9 * near;
-        v += dt * wet * suit * seed * (1 - v) * 1.6;
+        // river banks stay green between storms
+        const w = wet + this.river[k] * 0.6;
+        v += dt * w * suit * seed * (1 - v) * 1.6;
         out[k] = v;
         sum += v;
       }
@@ -180,15 +332,133 @@ export class Terrain {
 
   vegDirty = true;
 
+  /**
+   * Drainage, by priority-flood: flood the land up from the coast, lowest
+   * first, so every cell learns which way leads to the sea — even out of a
+   * hollow, which fills up to its rim and becomes a lake.
+   */
+  route() {
+    const H = this.h, R = this.recv, F = this.filled, seen = this.seen, order = this.order;
+    const heap = this.heap;
+    heap.clear();
+    seen.fill(0);
+    R.fill(-1);
+    // the sea is the outlet: every sea cell touching land starts the flood
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        const k = j * N + i;
+        if (H[k] > SEA) continue;
+        seen[k] = 1;
+        F[k] = SEA;
+        if ((i > 0 && H[k - 1] > SEA) || (i < N - 1 && H[k + 1] > SEA) || (j > 0 && H[k - N] > SEA) || (j < N - 1 && H[k + N] > SEA)) heap.push(k, SEA);
+      }
+    }
+    let n = 0;
+    while (heap.size) {
+      const k = heap.top();
+      const p = heap.topPriority();
+      heap.pop();
+      if (H[k] > SEA) order[n++] = k;
+      const i = k % N, j = (k - i) / N;
+      for (let o = 0; o < 8; o++) {
+        const ni = i + DI[o], nj = j + DJ[o];
+        if (ni < 0 || nj < 0 || ni >= N || nj >= N) continue;
+        const q = nj * N + ni;
+        if (seen[q]) continue;
+        seen[q] = 1;
+        // a hollow fills to its rim, then spills; flats lean very slightly downstream
+        const fq = Math.max(H[q], p + 1e-5);
+        F[q] = fq;
+        R[q] = k;
+        heap.push(q, fq);
+      }
+    }
+    this.landOrder = n;
+    this.reshaped = false;
+    // where the land falls away, follow the steepest way down rather than the flood's
+    for (let c = 0; c < n; c++) {
+      const k = order[c];
+      const i = k % N, j = (k - i) / N;
+      const f = F[k];
+      let best = 0;
+      let to = -1;
+      for (let o = 0; o < 8; o++) {
+        const ni = i + DI[o], nj = j + DJ[o];
+        if (ni < 0 || nj < 0 || ni >= N || nj >= N) continue;
+        const q = nj * N + ni;
+        const d = (f - F[q]) * DW[o];
+        if (d > best) {
+          best = d;
+          to = q;
+        }
+      }
+      if (to >= 0 && best > 2e-5) R[k] = to;
+    }
+  }
+
+  /**
+   * Water runs downhill, gathering as it goes. Where enough of it gathers it
+   * shows as a river (and a filled hollow as a lake), and while it rains,
+   * rivers cut their valleys a little deeper.
+   */
+  flow(dt: number, rain: number) {
+    const H = this.h, R = this.recv, F = this.filled, A = this.acc, order = this.order, W = this.river;
+    // springs keep the big rivers running between storms
+    const inflow = 0.35 + rain * 1.2;
+    A.fill(0);
+    for (let c = 0; c < this.landOrder; c++) A[order[c]] = inflow;
+    // highest first: each cell hands its water on to the one it drains into
+    for (let c = this.landOrder - 1; c >= 0; c--) {
+      const k = order[c];
+      const r = R[k];
+      if (r >= 0) A[r] += A[k];
+    }
+    // rivers swell quickly in a storm and fall back slowly after it
+    const rise = 1 - Math.exp(-dt * 1.5);
+    const fall = 1 - Math.exp(-dt * 0.25);
+    const cut = 0.006 * rain * dt;
+    for (let c = 0; c < this.landOrder; c++) {
+      const k = order[c];
+      const h = H[k];
+      const lake = F[k] - h > 0.03 ? 1 : 0;
+      const want = h > SEA ? Math.max(lake, smooth(60, 260, A[k])) : 0;
+      W[k] += (want - W[k]) * (want > W[k] ? rise : fall);
+      // erosion: fast water on a slope wears the land down towards its outlet
+      const r = R[k];
+      if (cut > 0 && r >= 0 && A[k] > 30 && !lake) {
+        const drop = h - H[r];
+        if (drop <= 0) continue;
+        const e = Math.min(cut * Math.sqrt(A[k]) * drop * 0.6, drop * 0.4, 0.002);
+        H[k] = Math.max(h - e, SEA + 0.004);
+        this.reshaped = true;
+      }
+    }
+    // the sea takes back whatever river water was left on drowned cells
+    for (let k = 0; k < N * N; k++) if (H[k] <= SEA && W[k] > 0) W[k] = Math.max(0, W[k] - dt * 2);
+    this.markDirty(0, 0, N - 1, N - 1);
+  }
+
   /** forest cover, in square world units */
   get forestArea() {
     return this.forestSum * CELL * CELL;
   }
 
+  /** the middle of the land, for things that circle it */
+  centre: [number, number] = [0.15, 0.1];
+
   countLand() {
-    let n = 0;
-    for (let k = 0; k < this.h.length; k++) if (this.h[k] > SEA + 0.01) n++;
+    let n = 0, sx = 0, sz = 0;
+    for (let j = 0; j < N; j++) {
+      for (let i = 0; i < N; i++) {
+        if (this.h[j * N + i] > SEA + 0.01) {
+          n++;
+          sx += i;
+          sz += j;
+        }
+      }
+    }
     this.landCells = n;
+    if (n > 0) this.centre = this.toWorld(sx / n, sz / n);
     return n;
   }
 

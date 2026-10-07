@@ -10,6 +10,7 @@ uniform sampler2D tWorld;
 uniform vec2 uWorldRes;   // texels
 uniform float uPx;        // device pixels per texel
 uniform vec3 uPal[4];     // ink → paper, sRGB
+uniform vec3 uMids[12];   // the two middle inks for each material: sky, water, land, forest, dodo, smoke
 uniform vec3 uAccent;     // the one colour that glows
 uniform float uPattern;   // 0 bayer · 1 noise · 2 halftone · 3 engraving lines
 uniform float uContrast;
@@ -63,7 +64,10 @@ void main() {
   float f = x - i;
   int idx = int(i) + (f > th ? 1 : 0);
   idx = clamp(idx, 0, 3);
-  vec3 col = uPal[idx];
+  // key and paper are shared; the middle inks change with what they print,
+  // like a risograph run with a different spot colour for sea and land
+  int m = w.b < 0.04 ? 0 : w.b < 0.15 ? 5 : w.b < 0.37 ? 1 : w.b < 0.55 ? 2 : w.b < 0.68 ? 3 : 4;
+  vec3 col = idx == 1 ? uMids[m * 2] : idx == 2 ? uMids[m * 2 + 1] : uPal[idx];
 
   // outlines where the depth or the material jumps: the engraver's contour
   vec4 r = texel(c + ivec2(1, 0));
@@ -72,7 +76,8 @@ void main() {
   float dz = max(abs(w.g - r.g), abs(w.g - u.g)) / d;
   float dm = max(abs(w.b - r.b), abs(w.b - u.b));
   float edge = step(0.12, dz) * step(w.b, 0.95) + step(0.2, dm) * 0.0;
-  if (uOutline > 0.5 && edge > 0.5 && w.b > 0.1) col = uPal[0];
+  // water is never outlined, so rivers stay rivers rather than ink lines
+  if (uOutline > 0.5 && edge > 0.5 && w.b > 0.1 && abs(w.b - 0.25) > 0.05) col = uPal[0];
 
   // the accent prints on top, dithered by its own strength
   float ta = threshold(vec2(c) + vec2(3.0, 5.0), sub);

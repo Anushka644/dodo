@@ -16,6 +16,7 @@ export interface Dodo {
   rest: number; // seconds left standing still
   honk: number; // 0..1, decays: a startled hop and flap
   born: number; // 0..1, grows in after hatching
+  flee: number; // seconds left running from lava
   alive: boolean;
 }
 
@@ -46,6 +47,7 @@ export class Flock {
       rest: rnd(0.5, 2),
       honk: grown ? 0 : 1,
       born: grown ? 1 : 0,
+      flee: 0,
       alive: true,
     };
     this.dodos.push(d);
@@ -97,13 +99,40 @@ export class Flock {
     return best;
   }
 
+  /** a cool spot on land away from the lava, or null */
+  private safeFrom(x: number, z: number): [number, number] | null {
+    let best: [number, number] | null = null;
+    let bestHeat = Infinity;
+    for (let i = 0; i < 16; i++) {
+      const p = this.landNear(x, z, 1.4);
+      if (!p) continue;
+      const h = this.terrain.heatAt(p[0], p[1]) - Math.hypot(p[0] - x, p[1] - z) * 0.05;
+      if (h < bestHeat) {
+        bestHeat = h;
+        best = p;
+      }
+    }
+    return best;
+  }
+
+  /** returns how many dodos were startled this step (by lava underfoot) */
   step(dt: number) {
     const T = this.terrain;
+    let startled = 0;
     for (const d of this.dodos) {
       d.born = Math.min(1, d.born + dt * 1.5);
       d.honk = Math.max(0, d.honk - dt * 1.6);
+      d.flee = Math.max(0, d.flee - dt);
       const ground = T.sample(d.x, d.z);
       const swimming = ground < SEA + 0.005;
+      // hot feet: flap, honk, and run for it
+      if (d.flee <= 0 && d.born >= 1 && T.heatAt(d.x, d.z) > 0.08) {
+        d.flee = 2.2;
+        d.honk = 1;
+        d.rest = 0;
+        d.target = this.safeFrom(d.x, d.z);
+        startled++;
+      }
 
       if (d.rest > 0 && !swimming) {
         d.rest -= dt;
@@ -117,16 +146,16 @@ export class Flock {
           let dh = want - d.heading;
           dh = Math.atan2(Math.sin(dh), Math.cos(dh));
           d.heading += dh * Math.min(1, dt * 4);
-          const sp = d.speed * (swimming ? 0.6 : 1) * d.born;
+          const sp = d.speed * (swimming ? 0.6 : 1) * d.born * (d.flee > 0 ? 3.2 : 1);
           const nx = d.x + Math.sin(d.heading) * sp * dt;
           const nz = d.z + Math.cos(d.heading) * sp * dt;
           const nh = T.sample(nx, nz);
           // dodos don't climb cliffs or walk into the sea on purpose
           const climb = nh - ground;
-          if ((nh > SEA + 0.01 || swimming) && climb < 0.08 * sp * dt * 60 + 0.02) {
+          if ((nh > SEA + 0.01 || swimming) && climb < 0.08 * sp * dt * 60 + 0.02 + (d.flee > 0 ? 0.02 : 0)) {
             d.x = nx;
             d.z = nz;
-            d.walk += dt * (swimming ? 5 : 11);
+            d.walk += dt * (swimming ? 5 : d.flee > 0 ? 26 : 11);
           } else {
             d.target = null;
           }
@@ -139,6 +168,7 @@ export class Flock {
       const targetY = Math.max(g, SEA - 0.035); // floating, mostly submerged
       d.y += (targetY - d.y) * Math.min(1, dt * 10);
     }
+    return startled;
   }
 
   /** packed for the shader: position + heading, and walk/bob/flap/alive */

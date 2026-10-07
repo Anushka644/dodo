@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/sound.ts","./src/island/dodos.ts","./src/island/engine.ts","./src/island/palettes.ts","./src/island/renderer.ts","./src/island/sound.ts","./src/island/terrain.ts","./vite.config.ts"],"version":"5.9.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/sound.ts","./src/island/birds.ts","./src/island/dodos.ts","./src/island/engine.ts","./src/island/palettes.ts","./src/island/renderer.ts","./src/island/sound.ts","./src/island/terrain.ts","./vite.config.ts"],"version":"5.9.3"}

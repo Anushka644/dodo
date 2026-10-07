@@ -101,6 +101,52 @@ class IslandSound {
     if (this.rainLoop) this.rainLoop.gain.gain.setTargetAtTime(amount * amount * 0.12, a.ctx.currentTime, 0.2);
   }
 
+  private hiss: { src: AudioBufferSourceNode; filter: BiquadFilterNode; gain: GainNode } | null = null;
+  private crackleAt = 0;
+
+  /** new land coming up: steam hissing off it, and the crackle of rock cooling */
+  lava(raising: number, glow: number) {
+    const a = sound.audio;
+    if (!a) return;
+    const { ctx, master, noise } = a;
+    if (!this.hiss && (raising > 0 || glow > 0.01)) {
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      src.playbackRate.value = 1.3;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.frequency.value = 3200;
+      filter.Q.value = 0.7;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(filter).connect(gain).connect(master);
+      src.start();
+      this.hiss = { src, filter, gain };
+    }
+    if (!this.hiss) return;
+    const t = ctx.currentTime;
+    const level = Math.max(raising * 0.06, glow * 0.035);
+    this.hiss.gain.gain.setTargetAtTime(level, t, raising ? 0.15 : 0.6);
+    this.hiss.filter.frequency.setTargetAtTime(raising ? 2600 : 4200, t, 0.3);
+    // crackles: little clicks of rock, more of them while it's hot
+    const heat = Math.max(raising, glow);
+    if (heat > 0.05 && t > this.crackleAt) {
+      this.crackleAt = t + 0.03 + Math.random() * (0.25 / heat);
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      const f = ctx.createBiquadFilter();
+      f.type = 'highpass';
+      f.frequency.value = 1200 + Math.random() * 2400;
+      const g = ctx.createGain();
+      const loud = (0.04 + Math.random() * 0.08) * heat;
+      g.gain.setValueAtTime(loud, t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.012 + Math.random() * 0.02);
+      src.connect(f).connect(g).connect(master);
+      src.start(t, Math.random() * 1.5, 0.05);
+    }
+  }
+
   /** thunder rolls in after the flash; further away, later and softer */
   thunder(delay: number) {
     const a = sound.audio;
@@ -122,6 +168,34 @@ class IslandSound {
     g.gain.exponentialRampToValueAtTime(0.0001, t + 2.6);
     src.connect(f).connect(g).connect(master);
     src.start(t, Math.random() * 0.5, 2.8);
+  }
+
+  /** a seabird, somewhere overhead: a few falling, scratchy cries */
+  cry(cameraDist: number) {
+    const a = sound.audio;
+    if (!a) return;
+    const { ctx, master } = a;
+    const loud = 0.03 * Math.min(1, Math.max(0.25, (14 - cameraDist) / 10));
+    const n = 2 + Math.floor(Math.random() * 3);
+    const base = 1500 + Math.random() * 600;
+    for (let i = 0; i < n; i++) {
+      const t = ctx.currentTime + i * (0.16 + Math.random() * 0.06);
+      const o = ctx.createOscillator();
+      o.type = 'sawtooth';
+      o.frequency.setValueAtTime(base * (1 + Math.random() * 0.08), t);
+      o.frequency.exponentialRampToValueAtTime(base * 0.62, t + 0.12);
+      const bp = ctx.createBiquadFilter();
+      bp.type = 'bandpass';
+      bp.frequency.value = 2400;
+      bp.Q.value = 2;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(loud, t + 0.015);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
+      o.connect(bp).connect(g).connect(master);
+      o.start(t);
+      o.stop(t + 0.16);
+    }
   }
 
   /** an egg cracks somewhere on the island */
