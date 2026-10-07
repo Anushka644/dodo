@@ -22,6 +22,16 @@ at night the surf glows.
 
 Raise twelve dodos and the species isn't extinct any more, at least here.
 
+**Lend a hand** puts your own hand into the world. The webcam watches it, and
+a giant printed hand reaches into the island where you see yours in the
+mirror, coming out of a cloud the way hands do in old emblem books and on the
+corners of sea charts. Reach towards the screen and it lowers. Hold it palm up
+and low beside a dodo, and wait: the curious ones climb aboard. Carry them
+across the water; tip your hand and they slide off and flutter down (they
+still can't fly). Your hand casts a real shadow. Wiggle your fingers and it
+rains under your hand alone, and the forest grows there. Lay it on the sea
+and rings spread out, glowing at night.
+
 The whole world is drawn as a print: four inks and one fluorescent spot
 colour, put down through an ordered dither, like an engraving that happens to
 be alive. **Print** mounts the current view as a plate from an old natural
@@ -37,6 +47,7 @@ history, with a caption of what's on the island.
 | **Click a dodo** | say hello |
 | **1–5** · **P** · **[ ]** | inks · print pattern · dot size |
 | **H** | back home |
+| **Lend a hand** (webcam) | palm up and low: dodos climb on · tip: they slide off · wiggle fingers: rain · touch the sea: ripples |
 
 On a touchscreen: one finger sculpts, two fingers turn and zoom.
 
@@ -50,12 +61,20 @@ the first ten seconds (press, and the sea boils), and a slower loop that
 rewards staying (rain, forest, rivers, eggs, birds, the log filling up).
 
 It's also built the way the brief suggested, out of shaders. Paper Shaders'
-dithering was the starting point for the look; here the dither is the whole
-renderer, and a few inks stretch to cover sea, forest, lava and night.
+dithering was the starting point for the look. Paper Shaders are 2D image and
+pattern effects, though, and an island you can sculpt needs a raymarched 3D
+world with a simulation under it, so the world has its own shader, with
+dithering as the whole renderer. Paper Shaders does appear where it fits:
+the camera mirror is your webcam printed live through its `HalftoneDots`
+shader, in the island's own inks.
+
+The hand came last. The camera isn't a replacement for the mouse here. It
+adds the one thing a mouse can't: you are physically in the world, and the
+dodos react to you.
 
 ## How it's built
 
-No 3D engine: React for the chrome, one WebGL2 canvas, and about 3,000 lines
+No 3D engine: React for the chrome, one WebGL2 canvas, and about 5,000 lines
 of TypeScript and GLSL.
 
 - **The world is one fragment shader.** It raymarches a heightfield (the land
@@ -87,9 +106,22 @@ of TypeScript and GLSL.
   climb cliffs, float (offended) if you drown their ground, and run, flapping,
   from lava. Seabirds arrive from the sea, circle the island, alternate
   wingbeats and glides, and leave at night.
+- **The hand.** MediaPipe's hand landmarker runs on the webcam (GPU, falling
+  back to CPU), with its runtime and model served from this site, and a One
+  Euro filter on the landmarks. Its metric 3D landmarks become 21 joints in the
+  world, turned so a hand shown to the camera leans back into the scene palm
+  towards you, and placed where the hand appears in the mirror: a bigger
+  hand in the frame is closer to the camera, so it reaches further in. In the
+  shader it's a signed-distance hand (tapered finger bones, a fleshier palm,
+  a cloud cuff) that casts soft shadows on land, sea and dodos and
+  materialises in dithered patches. The palm becomes a little floor dodos can
+  stand on. Finger wiggle, measured in the palm's own frame so moving the
+  hand doesn't count, becomes a local shower that feeds the forest and rivers.
+  Contact with the sea starts ripples.
 - **Sound is synthesised** with the Web Audio API: the sea (louder as you get
   closer), the ground groaning as it rises, lava hiss and crackle, rain,
-  thunder with a delay, seabird cries, eggs, and the dodo's two-note honk.
+  thunder with a delay, seabird cries, eggs, the dodo's two-note honk, a
+  whoosh when your hand arrives, and plinks when it touches the water.
 - **Small things.** The opening descends through dithered cloud. The chrome
   fades while you work. A log notes each first ("A river finds its way down to
   the sea."). Reduced motion skips the intro. Dot size and inks are live.
@@ -105,10 +137,10 @@ of TypeScript and GLSL.
   could live in the URL, and a plate could link back to the island it shows.
 - **Paper.** Overprint between inks, a little mis-registration, and paper
   texture under the dither, so a printed plate feels like a real risograph.
-- **Hands.** Raise land with an open palm over the webcam and sweep for rain.
-  I prototyped camera input earlier in this project and dropped it, because
-  the mouse was more precise. With a world this tactile it might earn its
-  place back.
+- **Two hands.** Cup both hands to carry water and pour it into a crater
+  lake, or shelter the dodos from a storm.
+- **The hand as weather and time.** Hold it over the sun for an eclipse that
+  sends the birds home; a fist closing slowly to bring on dusk.
 
 ## Run it
 
@@ -118,7 +150,9 @@ npm run dev        # http://localhost:5173
 npm run build      # static site in dist/
 ```
 
-Add `?still` to skip the intro, or `?px=3` for bigger dots. Dots default to
+The camera needs a secure context: `localhost` is fine, and a deployed site
+must be on HTTPS (GitHub Pages, Vercel and Netlify all are). Add `?still` to
+skip the intro, or `?px=3` for bigger dots. Dots default to
 2 CSS px; if frames run long for a few seconds on a slow GPU, it steps up to
 3 by itself.
 
