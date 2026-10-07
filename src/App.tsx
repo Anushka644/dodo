@@ -1,36 +1,37 @@
 import { useEffect, useRef, useState } from 'react';
-import { BordersEngine, type BordersHud } from './borders/engine';
-import { COUNTRIES, countryByCode, formatMoney } from './borders/countries';
+import { IslandEngine, type IslandHud } from './island/engine';
+import { PALETTES, PATTERNS } from './island/palettes';
 import { sound } from './sound';
 
-const params = new URLSearchParams(location.search);
-const countryIndex = countryByCode(params.get('c'));
-const coarse = typeof window !== 'undefined' && window.matchMedia('(pointer: coarse)').matches;
-const narrow = typeof window !== 'undefined' && window.innerWidth < 640;
+const HINTS = [
+  'Press and hold on the sea to raise land.',
+  'Drag across the sky to move the sun.',
+  'Hold Shift to carve it back down. Right-drag to turn the island.',
+  'Click a dodo to say hello. Double-click to fly closer.',
+];
 
 export function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const engineRef = useRef<BordersEngine | null>(null);
+  const engineRef = useRef<IslandEngine | null>(null);
   const [ready, setReady] = useState(false);
   const [failed, setFailed] = useState(false);
-  const [hud, setHud] = useState<BordersHud | null>(null);
+  const [hud, setHud] = useState<IslandHud | null>(null);
   const [soundOn, setSoundOn] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
-  const [tilt, setTilt] = useState(false);
+  const [hint, setHint] = useState(0);
   const toastTimer = useRef(0);
-  const country = COUNTRIES[countryIndex];
 
   const flash = (msg: string) => {
     setToast(msg);
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 3600);
+    toastTimer.current = window.setTimeout(() => setToast(null), 3400);
   };
 
   useEffect(() => {
     const canvas = canvasRef.current!;
-    let engine: BordersEngine;
+    let engine: IslandEngine;
     try {
-      engine = new BordersEngine(canvas, countryIndex);
+      engine = new IslandEngine(canvas);
     } catch (e) {
       console.error(e);
       setFailed(true);
@@ -38,49 +39,104 @@ export function App() {
     }
     engineRef.current = engine;
     engine.onHud = setHud;
-    engine.init().then(() => {
-      setReady(true);
-      document.body.dataset.ready = '1';
-    });
+    engine.onHatch = (n) => flash(n === 2 ? 'An egg hatched. The last dodo is not the last any more.' : `Another dodo hatched. ${n} on the island.`);
+    engine.run();
+    setReady(true);
+    document.body.dataset.ready = '1';
     const onResize = () => engine.layout();
     window.addEventListener('resize', onResize);
     return () => {
       window.removeEventListener('resize', onResize);
       engine.dispose();
     };
-  }, [country.name]);
+  }, []);
+
+  // the hints move along as you do each thing
+  useEffect(() => {
+    if (!hud) return;
+    if (hint === 0 && hud.land > 0.45) setHint(1);
+    if (hint === 1 && hud.mode === 'sun') setHint(2);
+    if (hint === 2 && (hud.mode === 'carve' || hud.mode === 'orbit')) setHint(3);
+  }, [hud, hint]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return;
-      if (e.key === 'p' || e.key === 'P') engineRef.current?.print(3);
-      if (e.key === 'o' || e.key === 'O') openBorder();
+      const engine = engineRef.current;
+      if (!engine) return;
+      const n = Number(e.key);
+      if (n >= 1 && n <= PALETTES.length) engine.palette = n - 1;
+      else if (e.key === 'p' || e.key === 'P') engine.pattern = (engine.pattern + 1) % PATTERNS.length;
+      else if (e.key === '[') engine.setPx(engine.px - 1);
+      else if (e.key === ']') engine.setPx(engine.px + 1);
+      else if (e.key === 'ArrowLeft') engine.orbit(-0.15, 0);
+      else if (e.key === 'ArrowRight') engine.orbit(0.15, 0);
+      else if (e.key === 'ArrowUp') engine.orbit(0, 0.08);
+      else if (e.key === 'ArrowDown') engine.orbit(0, -0.08);
+      else if (e.key === 'h' || e.key === 'H') engine.home();
+      else return;
+      e.preventDefault();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  });
+  }, []);
 
-  const openBorder = () => {
-    const w = engineRef.current?.openBorder();
-    if (!w) flash('Allow pop-ups for this page to open a border.');
-  };
+  useEffect(() => {
+    const canvas = canvasRef.current!;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      engineRef.current?.wheel(e.deltaY);
+    };
+    canvas.addEventListener('wheel', onWheel, { passive: false });
+    return () => canvas.removeEventListener('wheel', onWheel);
+  }, []);
 
-  const enableTilt = async () => {
-    sound.wake();
-    const DOE = window.DeviceOrientationEvent as unknown as { requestPermission?: () => Promise<string> };
-    try {
-      if (DOE?.requestPermission && (await DOE.requestPermission()) !== 'granted') return;
-    } catch {
+  // two fingers on a touchscreen: turn and zoom
+  const touches = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ d: number; x: number; y: number } | null>(null);
+
+  const onDown = (e: React.PointerEvent) => {
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.current.size === 2) {
+      engineRef.current?.pointerUp();
+      const [a, b] = [...touches.current.values()];
+      pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       return;
     }
-    const onTilt = (e: DeviceOrientationEvent) => {
-      const g = ((e.gamma ?? 0) * Math.PI) / 180; // left/right
-      const b = ((e.beta ?? 90) * Math.PI) / 180; // front/back
-      engineRef.current?.setTilt({ x: Math.sin(g), y: Math.max(0.15, Math.sin(b)) });
-    };
-    window.addEventListener('deviceorientation', onTilt);
-    setTilt(true);
-    flash('Tilt the phone. The money slides.');
+    engineRef.current?.pointerDown(e.clientX, e.clientY, e.button, e.shiftKey);
+  };
+
+  const onMove = (e: React.PointerEvent) => {
+    if (touches.current.has(e.pointerId)) touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (touches.current.size === 2 && pinch.current) {
+      const [a, b] = [...touches.current.values()];
+      const d = Math.hypot(a.x - b.x, a.y - b.y);
+      const x = (a.x + b.x) / 2;
+      const y = (a.y + b.y) / 2;
+      engineRef.current?.wheel((pinch.current.d - d) * 4);
+      engineRef.current?.orbit(-(x - pinch.current.x) * 0.006, (y - pinch.current.y) * 0.004);
+      pinch.current = { d, x, y };
+      return;
+    }
+    engineRef.current?.pointerMove(e.clientX, e.clientY, e.shiftKey);
+  };
+
+  const onUp = (e: React.PointerEvent) => {
+    touches.current.delete(e.pointerId);
+    if (touches.current.size < 2) pinch.current = null;
+    engineRef.current?.pointerUp();
+  };
+
+  const save = async () => {
+    const blob = await engineRef.current?.capture();
+    if (!blob) return;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `raphus-${Date.now()}.png`;
+    a.click();
+    window.setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    flash('Printed.');
   };
 
   const toggleSound = () => {
@@ -90,147 +146,102 @@ export function App() {
     setSoundOn(next);
   };
 
-  const pointer = (kind: 'down' | 'move' | 'up') => (e: React.PointerEvent) => {
-    if (kind === 'down') (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
-    engineRef.current?.pointer(kind, e.pointerId, e.clientX, e.clientY);
-  };
-
-  // the window's own title bar and tab icon join in: balance and currency
-  useEffect(() => {
-    const n = hud?.notesHere ?? 0;
-    document.title = `${formatMoney(country, n)} · ${country.name}`;
-  }, [hud?.notesHere, country]);
-
-  useEffect(() => {
-    const c = document.createElement('canvas');
-    c.width = c.height = 64;
-    const g = c.getContext('2d')!;
-    g.fillStyle = '#0b0b0a';
-    g.beginPath();
-    g.roundRect(0, 0, 64, 64, 14);
-    g.fill();
-    g.fillStyle = '#c6fe1f';
-    g.font = `600 ${country.symbol.length > 1 ? 26 : 40}px Georgia, "Times New Roman", serif`;
-    g.textAlign = 'center';
-    g.textBaseline = 'middle';
-    g.fillText(country.symbol, 32, 35);
-    let link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-    if (!link) {
-      link = document.createElement('link');
-      link.rel = 'icon';
-      document.head.appendChild(link);
-    }
-    link.type = 'image/png';
-    link.href = c.toDataURL('image/png');
-  }, [country]);
-
-  const here = hud?.notesHere ?? 0;
-  const alone = (hud?.open.length ?? 1) <= 1;
-  const reserves = formatMoney(country, here);
+  const engine = engineRef.current;
+  const land = hud ? (hud.land * 0.8).toFixed(1) : '0.0';
 
   return (
-    <div className={`app ${ready ? 'is-ready' : ''} ${alone ? 'is-alone' : ''}`}>
+    <div className={`app ${ready ? 'is-ready' : ''} mode-${hud?.mode ?? 'idle'}`}>
       <canvas
         ref={canvasRef}
         className="stage"
-        onPointerDown={pointer('down')}
-        onPointerMove={pointer('move')}
-        onPointerUp={pointer('up')}
-        onPointerCancel={pointer('up')}
+        onPointerDown={onDown}
+        onPointerMove={onMove}
+        onPointerUp={onUp}
+        onPointerCancel={onUp}
+        onPointerLeave={() => engineRef.current?.pointerLeave()}
+        onDoubleClick={(e) => engineRef.current?.focus(e.clientX, e.clientY)}
         onContextMenu={(e) => e.preventDefault()}
         role="img"
-        aria-label={`${country.name}: banknotes of the Dodo Reserve, printed in ${country.currency}. Drag and throw them; throw one hard at the edge to send it to another window.`}
+        aria-label="A dithered island in the sea. Press and hold to raise land; drag the sky to move the sun."
       />
 
       <header className="masthead">
-        <div className="wordmark">{country.name}</div>
-        <div className="sub mono">
-          {country.currency} · 1 DODO = {formatMoney(country, 1)}
-        </div>
+        <div className="wordmark">Raphus</div>
+        <div className="sub mono">an island for the last dodo</div>
       </header>
 
-      <section className="supply mono" aria-live="polite">
-        <div className="supply-row">
-          <span className="supply-label">Held here</span>
-          <span className="supply-value">{reserves}</span>
+      <section className="readout mono" aria-live="polite">
+        <div className="clock">{hud?.hour ?? '06:40'}</div>
+        <div className="stats">
+          <span>
+            {hud?.dodos ?? 1} dodo{(hud?.dodos ?? 1) === 1 ? '' : 's'}
+          </span>
+          <span className="dot">·</span>
+          <span>{land} km² of land</span>
         </div>
-        <ol className="countries" aria-label="Countries open on this desktop">
-          {(hud?.open ?? [{ country: countryIndex, self: true }]).map((o, i) => (
-            <li key={`${o.country}-${i}`} className={o.self ? 'is-self' : ''} title={COUNTRIES[o.country].name}>
-              {COUNTRIES[o.country].code}
-            </li>
-          ))}
-        </ol>
       </section>
 
+      <p className="hint" key={hint}>
+        {HINTS[hint]}
+      </p>
+
       <footer className="dock">
-        <p className="hint-line">
-          {alone
-            ? narrow || coarse
-              ? 'Drag a note and throw it. On a laptop, open a second country and send money across the desktop.'
-              : 'Every window is a country. Open a border, then throw a note hard at the edge.'
-            : 'Throw hard at an edge to clear customs. Overlap two windows and the border opens.'}
-        </p>
-        <div className="actions">
-          {!(narrow || coarse) && (
-            <button className="btn btn-primary" onClick={openBorder}>
-              <span className="led" /> Open a border
+        <div className="group" role="radiogroup" aria-label="Inks">
+          {PALETTES.map((p, i) => (
+            <button
+              key={p.name}
+              className={`swatch ${hud?.palette === i ? 'is-on' : ''}`}
+              onClick={() => engine && (engine.palette = i)}
+              title={`${p.name} (${i + 1})`}
+              role="radio"
+              aria-checked={hud?.palette === i}
+            >
+              {i === 0 ? (
+                <span className="sw sw-day" />
+              ) : (
+                <span className="sw" style={{ background: `linear-gradient(90deg, ${css(p.inks[0])} 0 50%, ${css(p.inks[3])} 50% 100%)` }} />
+              )}
+              <span className="label mono">{p.name}</span>
             </button>
-          )}
-          {(narrow || coarse) && !tilt && (
-            <button className="btn btn-primary" onClick={enableTilt}>
-              <span className="led" /> Tilt to move money
-            </button>
-          )}
-          <button className="btn" onClick={() => engineRef.current?.print(3)} title="Print three more notes (P)">
-            Print money
+          ))}
+        </div>
+
+        <div className="group">
+          <button className="chip mono" onClick={() => engine && (engine.pattern = (engine.pattern + 1) % PATTERNS.length)} title="Dither pattern (P)">
+            {PATTERNS[hud?.pattern ?? 0]}
           </button>
-          <button className="icon-btn" onClick={toggleSound} title={soundOn ? 'Mute' : 'Sound on'} aria-pressed={soundOn}>
-            {soundOn ? <IconSound /> : <IconMute />}
+          <div className="stepper mono" title="Dot size ([ and ])">
+            <button onClick={() => engine?.setPx(engine.px - 1)} aria-label="Smaller dots">
+              −
+            </button>
+            <span>{hud?.px ?? 3}px</span>
+            <button onClick={() => engine?.setPx(engine.px + 1)} aria-label="Bigger dots">
+              +
+            </button>
+          </div>
+          <button className="chip mono" onClick={save} title="Save a print">
+            Print
+          </button>
+          <button className="chip mono" onClick={toggleSound} aria-pressed={soundOn} title={soundOn ? 'Mute' : 'Sound on'}>
+            {soundOn ? 'Sound' : 'Muted'}
           </button>
         </div>
       </footer>
 
       {toast && (
-        <div className="toast mono" key={toast} role="status">
+        <div className="toast" key={toast} role="status">
           {toast}
         </div>
       )}
       {failed && (
         <div className="fallback">
-          <p>This toy needs WebGL2, which this browser doesn&rsquo;t offer. Try a recent Chrome, Safari or Firefox.</p>
+          <p>This island needs WebGL2, which this browser doesn&rsquo;t offer. Try a recent Chrome, Safari or Firefox.</p>
         </div>
       )}
     </div>
   );
 }
 
-const icon = {
-  width: 18,
-  height: 18,
-  viewBox: '0 0 24 24',
-  fill: 'none',
-  stroke: 'currentColor',
-  strokeWidth: 1.5,
-  strokeLinecap: 'round' as const,
-  strokeLinejoin: 'round' as const,
-  'aria-hidden': true,
-};
-
-function IconSound() {
-  return (
-    <svg {...icon}>
-      <path d="M5 10 h3 l4 -4 v12 l-4 -4 H5 Z" />
-      <path d="M15.5 9.5 a3.5 3.5 0 0 1 0 5 M18 7 a7 7 0 0 1 0 10" />
-    </svg>
-  );
-}
-
-function IconMute() {
-  return (
-    <svg {...icon}>
-      <path d="M5 10 h3 l4 -4 v12 l-4 -4 H5 Z" />
-      <path d="M16 10 l4 4 M20 10 l-4 4" />
-    </svg>
-  );
+function css(rgb: [number, number, number]) {
+  return `rgb(${rgb.map((c) => Math.round(c * 255)).join(',')})`;
 }
