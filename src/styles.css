@@ -474,18 +474,18 @@ button {
 .mirror.is-wind {
   right: auto;
   bottom: auto;
-  top: calc(var(--wy) - 84px);
-  left: calc(var(--wx) - 84px);
-  width: 168px;
+  top: calc(var(--wy) - var(--wr));
+  left: calc(var(--wx) - var(--wr));
+  width: calc(var(--wr) * 2);
 }
 
 .mirror.is-wind.right {
-  left: calc(100vw - var(--wx) - 84px);
+  left: calc(100vw - var(--wx) - var(--wr));
 }
 
 .mirror.is-wind .mirror-print {
-  width: 168px;
-  height: 168px;
+  width: calc(var(--wr) * 2);
+  height: calc(var(--wr) * 2);
   border-radius: 50%;
   overflow: hidden;
   outline: 0;

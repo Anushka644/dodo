@@ -35,7 +35,8 @@ uniform float uCloud;       // cloud cover 0..1
 uniform float uIntro;       // 0 → 1 opening shot
 uniform vec4 uVent[4];      // smoke over new land: x, base y, z, strength
 uniform vec4 uBird[16];     // seabirds: x, y, z, wing (> 5: away at sea, not drawn)
-uniform vec4 uWind;         // wind over the world: direction (x, z), strength 0..1, and how far it has blown (for the clouds)
+uniform vec4 uWind;         // wind over the world: direction (x, z), strength 0..1
+uniform vec2 uWindOff;      // how far it has carried the clouds, integrated (so they never jump)
 uniform vec4 uWindHead;     // where on the print the wind head blows from (texel x, y) and its direction on the print
 
 out vec4 outData;
@@ -320,7 +321,7 @@ vec3 moonDir() {
 }
 
 float clouds(vec2 xz) {
-  vec2 p = xz * 0.16 + vec2(uTime * 0.012, uTime * 0.004) * (1.0 + uRain * 3.0) - uWind.xy * uWind.w * 0.16;
+  vec2 p = xz * 0.16 + vec2(uTime * 0.012, uTime * 0.004) * (1.0 + uRain * 3.0) - uWindOff * 0.16;
   float c = fbm(p);
   return smoothstep(0.56 - 0.36 * uCloud, 0.8 - 0.25 * uCloud, c);
 }
@@ -743,7 +744,7 @@ void main() {
     float boil = land(p.xz).b * smoothstep(0.3, 0.0, wdepth);
     foam = max(foam, boil * smoothstep(0.35, 0.7, vnoise(p.xz * 30.0 + vec2(0.0, uTime * 3.0))));
     // in a wind, whitecaps break on the swells
-    float caps = uWind.z * smoothstep(0.74, 0.92, vnoise(p.xz * 15.0 - uWind.xy * uWind.w * 8.0 + uTime * 0.5)) * smoothstep(0.5, 0.95, s1 * 0.6 + s2 * 0.4 + 0.3);
+    float caps = uWind.z * smoothstep(0.74, 0.92, vnoise(p.xz * 15.0 - uWindOff * 8.0 + uTime * 0.5)) * smoothstep(0.5, 0.95, s1 * 0.6 + s2 * 0.4 + 0.3);
     foam = max(foam, caps * 0.65 * smoothstep(0.1, 0.4, wdepth));
     tone = mix(tone, 1.0, foam);
     // at night the surf glows: bioluminescence, in the only colour we have

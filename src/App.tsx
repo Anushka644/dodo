@@ -78,6 +78,9 @@ export function App() {
   const [ending, setEnding] = useState(false);
   const [tried, setTried] = useState<Set<Milestone>>(new Set());
   const [faceBusy, setFaceBusy] = useState(false);
+  // the wind head stays up a moment after you stop blowing, so it never bounces
+  const [windShown, setWindShown] = useState(false);
+  const [windHead, setWindHead] = useState({ x: 0, y: 0, r: 84 });
   const [faceStatus, setFaceStatus] = useState('');
   const faceBusyRef = useRef(false);
   const mirrorRef = useRef<HTMLDivElement>(null);
@@ -262,6 +265,9 @@ export function App() {
       mirror.current?.dispose();
       mirror.current = null;
       engine.disableFace();
+      faceBusyRef.current = false;
+      setFaceBusy(false);
+      setFaceStatus('');
       return;
     }
     faceBusyRef.current = true;
@@ -328,6 +334,32 @@ export function App() {
     return () => document.removeEventListener('visibilitychange', onVis);
   }, [ready]);
 
+  const blowing = !!hud?.expr.blow;
+  useEffect(() => {
+    if (blowing) {
+      setWindShown(true);
+      return;
+    }
+    const id = window.setTimeout(() => setWindShown(false), 400);
+    return () => window.clearTimeout(id);
+  }, [blowing]);
+
+  // where the wind head sits: a corner of the sky, clear of the masthead, smaller on a phone;
+  // the shader is told too, so the breath streams from its mouth
+  useEffect(() => {
+    const place = () => {
+      const r = window.innerWidth <= 640 ? 56 : 84;
+      const top = document.querySelector('.masthead')?.getBoundingClientRect().bottom ?? 96;
+      const x = Math.max(r + 12, window.innerWidth * WIND_HEAD.x);
+      const y = Math.max(top + r + 10, window.innerHeight * WIND_HEAD.y);
+      setWindHead({ x, y, r });
+      if (engineRef.current) engineRef.current.windHeadAt = { x, y };
+    };
+    place();
+    window.addEventListener('resize', place);
+    return () => window.removeEventListener('resize', place);
+  }, [ready]);
+
   // the mirror prints in the island's inks as the day turns
   useEffect(() => {
     if (!mirror.current || !engineRef.current) return;
@@ -343,7 +375,7 @@ export function App() {
 
   const engine = engineRef.current;
   const faceOn = !!hud && hud.face !== 'off';
-  const windy = faceOn && !!hud?.expr.blow;
+  const windy = faceOn && windShown;
   const land = hud ? (hud.land * 0.8).toFixed(1) : '0.0';
   const forest = hud && hud.land > 0.05 ? Math.min(100, Math.round((hud.forest / hud.land) * 100)) : 0;
 
@@ -409,7 +441,7 @@ export function App() {
       <figure
         className={`mirror ${faceOn ? 'is-on' : ''} ${windy ? `is-wind ${hud?.windSide}` : ''}`}
         aria-hidden={!faceOn}
-        style={{ '--wx': `${WIND_HEAD.x * 100}vw`, '--wy': `${WIND_HEAD.y * 100}vh` } as React.CSSProperties}
+        style={{ '--wx': `${windHead.x}px`, '--wy': `${windHead.y}px`, '--wr': `${windHead.r}px` } as React.CSSProperties}
       >
         <div className="mirror-print" ref={mirrorRef} />
         <figcaption className="mono">You, printed by Paper Shaders</figcaption>

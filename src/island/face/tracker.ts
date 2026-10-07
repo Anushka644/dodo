@@ -140,8 +140,11 @@ export class FaceTracker {
     this.last = {
       smile: pair('mouthSmile'),
       frown: Math.max(pair('browDown'), pair('mouthFrown') * 0.9),
-      closed: pair('eyeBlink'),
-      blow: Math.max(b('cheekPuff') * 1.25, b('mouthPucker') * 0.85, b('mouthFunnel') * 0.8),
+      // looking down at the keyboard narrows the eyes too: that isn't sleep
+      closed: Math.max(0, pair('eyeBlink') - 0.6 * pair('eyeLookDown')),
+      // puffed cheeks read weakly, so they count double; pursed lips count only with a
+      // still, closed jaw (speech rounds the lips on every "oo" and moves the jaw)
+      blow: Math.max(b('cheekPuff') * 2, Math.max(b('mouthPucker') * 0.85, b('mouthFunnel') * 0.8) * (1 - smoothstep(0.12, 0.3, b('jawOpen')))),
       roar: b('jawOpen'),
       head: { x: hx, y: hy, size: hs },
     };
@@ -158,6 +161,11 @@ export class FaceTracker {
     }
   }
 }
+
+const smoothstep = (a: number, b: number, x: number) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
 
 /** one throwaway frame, so the GPU pipeline is built now rather than mid-smile */
 function warm(lm: FaceLandmarker) {

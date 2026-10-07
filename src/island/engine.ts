@@ -136,12 +136,20 @@ export class IslandEngine {
   /** 0..1 while you smile: the clouds part */
   private sunny = 0;
   /** the wind over the island: direction (x, z), strength, how far it has blown */
-  private wind = { x: 1, z: 0, s: 0, phase: 0 };
+  private wind = { x: 1, z: 0, s: 0 };
+  /** how far the wind has carried the clouds (and the whitecaps), integrated so it never jumps */
+  private windOff: [number, number] = [0, 0];
+  private blowFor = 0;
+  private roarTime = 0;
+  /** where the wind head sits on the screen, in CSS pixels (the App lays it out and tells us) */
+  windHeadAt = { x: 0, y: 0 };
   private windSide: 'left' | 'right' = 'left';
   /** the view, turned by your head as if the island sat behind the glass */
   private look = { yaw: 0, pitch: 0, zoom: 1 };
-  private faceSizes: number[] = [];
-  private faceNeutral = 0;
+  /** where your face settles in its first second: the middle of the view */
+  private faceRest: { x: number; y: number; size: number }[] = [];
+  private faceNeutral: { x: number; y: number; size: number } | null = null;
+  private faceGoneFor = 0;
 
   // weather
   private rainHeld = false;
@@ -365,7 +373,15 @@ export class IslandEngine {
     const gen = ++this.faceGen;
     this.faceState = 'starting';
     onStatus?.('Opening the camera…');
-    const [cam, trk] = await Promise.allSettled([openCamera(), FaceTracker.create(onStatus)]);
+    const camP = openCamera();
+    // cancelled while the camera was still opening: close it the moment it does
+    camP.then(
+      (v) => {
+        if (gen !== this.faceGen) closeCamera(v);
+      },
+      () => undefined,
+    );
+    const [cam, trk] = await Promise.allSettled([camP, FaceTracker.create(onStatus)]);
     const cancelled = gen !== this.faceGen;
     if (cancelled || cam.status === 'rejected' || trk.status === 'rejected') {
       if (cam.status === 'fulfilled') closeCamera(cam.value);
@@ -378,8 +394,8 @@ export class IslandEngine {
     this.video = video;
     this.tracker = trk.value;
     this.faceState = 'looking';
-    this.faceSizes = [];
-    this.faceNeutral = 0;
+    this.faceRest = [];
+    this.faceNeutral = null;
     // a camera that goes away (unplugged, revoked, taken by another app) takes the face with it
     const track = (video.srcObject as MediaStream | null)?.getVideoTracks()[0];
     track?.addEventListener(
@@ -649,7 +665,13 @@ export class IslandEngine {
     const k = 1 - Math.exp(-dt * 3);
     if (!f) {
       e.smile = e.frown = e.closed = e.blow = e.roar = false;
-      this.closedFor = this.roarFor = 0;
+      this.closedFor = this.roarFor = this.blowFor = 0;
+      // gone a while, and the next face finds its own middle again
+      this.faceGoneFor += dt;
+      if (this.faceGoneFor > 2) {
+        this.faceRest = [];
+        this.faceNeutral = null;
+      }
       this.faceRain = false;
       this.roarAt = null;
       this.look.yaw += -this.look.yaw * k;
@@ -659,15 +681,25 @@ export class IslandEngine {
       if (this.intro >= 1) this.mark('face');
       const was = { ...e };
       // the wind head appears on the side of the sky your face is on (and stays while you blow)
-      if (!e.blow) this.windSide = f.head.x < 0 ? 'left' : 'right';
+      this.faceGoneFor = 0;
+      // (only once the last wind has died away, and not for a face sitting in the middle)
+      if (this.wind.s < 0.02 && Math.abs(f.head.x) > 0.1) this.windSide = f.head.x < 0 ? 'left' : 'right';
       // a little hysteresis, so an expression doesn't flicker on and off at the threshold
       e.smile = e.smile ? f.smile > 0.32 : f.smile > 0.5;
-      e.frown = !e.smile && (e.frown ? f.frown > 0.25 : f.frown > 0.42);
-      e.blow = e.blow ? f.blow > 0.28 : f.blow > 0.42;
+      // (a roar lowers the brows too: an open jaw isn't a frown)
+      e.frown = !e.smile && f.roar < 0.4 && (e.frown ? f.frown > 0.25 : f.frown > 0.42);
+      // a blow has to be held a moment, or every "oo" in conversation would gust
+      if (e.blow) e.blow = f.blow > 0.28;
+      else {
+        this.blowFor = f.blow > 0.42 ? this.blowFor + dt : 0;
+        e.blow = this.blowFor > 0.28;
+      }
       // a blink is not a sleep
-      this.closedFor = f.closed > 0.55 ? this.closedFor + dt : 0;
-      e.closed = this.closedFor > 0.35;
-      this.roarFor = f.roar > 0.55 && !e.smile ? this.roarFor + dt : 0;
+      // (nor is a glance at the keyboard, a laugh's squint or a scowl)
+      this.closedFor = f.closed > 0.55 && !e.smile && !e.frown ? this.closedFor + dt : 0;
+      e.closed = this.closedFor > 0.6;
+      // a laugh is not a roar, and neither is a yawn (eyes shut, jaw open)
+      this.roarFor = f.roar > 0.55 && !e.smile && f.closed < 0.4 ? this.roarFor + dt : 0;
       e.roar = this.roarFor > 0.45;
 
       // a smile: the clouds part, and at night the sun comes up for you
@@ -695,21 +727,31 @@ export class IslandEngine {
       }
       if (e.roar && !was.roar) {
         this.roarAt = this.roarSpot();
+        this.roarTime = 0;
         this.flock.startle(1);
         this.mark('roar');
       }
-      if (!e.roar) this.roarAt = null;
+      // one roar raises a hill, not a continent
+      this.roarTime += dt;
+      if (!e.roar || this.roarTime > 3) this.roarAt = null;
 
       // your head: the island sits behind the glass. Where your face first settles is
       // the middle; lean in to look closer
-      if (this.faceNeutral === 0 && Number.isFinite(f.head.size)) {
-        this.faceSizes.push(f.head.size);
-        if (this.faceSizes.length >= 30) this.faceNeutral = [...this.faceSizes].sort((a, b) => a - b)[15];
+      if (!this.faceNeutral && Number.isFinite(f.head.size)) {
+        this.faceRest.push(f.head);
+        if (this.faceRest.length >= 30) {
+          const mid = (key: 'x' | 'y' | 'size') => [...this.faceRest].map((r) => r[key]).sort((a, b) => a - b)[15];
+          this.faceNeutral = { x: mid('x'), y: mid('y'), size: mid('size') };
+        }
       }
-      const lean = this.faceNeutral ? clamp(Math.log(f.head.size / this.faceNeutral), -0.5, 0.5) : 0;
-      this.look.yaw += (clamp(f.head.x, -1, 1) * 0.42 - this.look.yaw) * k;
-      this.look.pitch += (clamp(f.head.y, -1, 1) * 0.16 - this.look.pitch) * k;
-      this.look.zoom += (Math.exp(-lean * 0.9) - this.look.zoom) * k;
+      const rest = this.faceNeutral ?? { x: 0, y: 0, size: f.head.size };
+      const lean = clamp(Math.log(f.head.size / rest.size), -0.5, 0.5);
+      // (held still while you sculpt or drag the sun, so the land doesn't slide under the pointer)
+      const holding = this.drag?.kind === 'sculpt' || this.drag?.kind === 'sun';
+      const kk = holding ? 0 : k;
+      this.look.yaw += (clamp(f.head.x - rest.x, -1, 1) * 0.42 - this.look.yaw) * kk;
+      this.look.pitch += (clamp(f.head.y - rest.y, -1, 1) * 0.16 - this.look.pitch) * kk;
+      this.look.zoom += (Math.exp(-lean * 0.9) - this.look.zoom) * kk;
     }
     // the wind blows while you blow, then dies away
     const want = e.blow && f ? clamp(f.blow * 1.5, 0.45, 1) : 0;
@@ -721,7 +763,8 @@ export class IslandEngine {
     const dir = norm([right[0] * side * 0.85 + away[0] * 0.5, 0, right[2] * side * 0.85 + away[2] * 0.5]);
     this.wind.x = dir[0];
     this.wind.z = dir[2];
-    this.wind.phase += this.wind.s * dt * 0.8;
+    this.windOff[0] += this.wind.x * this.wind.s * dt * 0.8;
+    this.windOff[1] += this.wind.z * this.wind.s * dt * 0.8;
   }
 
   /** where a roar breaks out: the island's highest ground near its middle, or the middle of the sea */
@@ -745,8 +788,10 @@ export class IslandEngine {
   /** the wind for the shader: over the world, and where on the print its head blows from */
   private windUniforms() {
     const [w, h] = this.renderer.worldSize;
-    const hx = (this.windSide === 'left' ? WIND_HEAD.x : 1 - WIND_HEAD.x) * w;
-    const hy = (1 - WIND_HEAD.y) * h;
+    const cssX = this.windHeadAt.x || WIND_HEAD.x * window.innerWidth;
+    const cssY = this.windHeadAt.y || WIND_HEAD.y * window.innerHeight;
+    const hx = ((this.windSide === 'left' ? cssX : window.innerWidth - cssX) / window.innerWidth) * w;
+    const hy = (1 - cssY / window.innerHeight) * h;
     // it blows towards the island, as it appears on the print
     const n = this.nest;
     const d: V3 = [n[0] - this.cam.pos[0], 0.3 - this.cam.pos[1], n[1] - this.cam.pos[2]];
@@ -758,7 +803,7 @@ export class IslandEngine {
     const l = Math.hypot(dx, dy) || 1;
     dx /= l;
     dy /= l;
-    return { uWind: [this.wind.x, this.wind.z, this.wind.s, this.wind.phase], uWindHead: [hx, hy, dx, dy] };
+    return { uWind: [this.wind.x, this.wind.z, this.wind.s, 0], uWindOff: this.windOff, uWindHead: [hx, hy, dx, dy] };
   }
 
   private currentPalette(): Palette {
