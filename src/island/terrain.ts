@@ -124,11 +124,15 @@ export class Terrain {
   dirty: [number, number, number, number] | null = [0, 0, N - 1, N - 1];
   private landCells = 0;
 
+  /** a fixed, gentle unevenness that only steers water, so rivers wander */
+  private wander = new Float32Array(N * N);
+
   constructor() {
     for (let j = 0; j < N; j++) {
       for (let i = 0; i < N; i++) {
         const [x, z] = this.toWorld(i, j);
         this.h[j * N + i] = seabed(x, z);
+        this.wander[j * N + i] = (fbm(x * 1.6 + 11.3, z * 1.6 - 4.1) - 0.5) * 0.05;
       }
     }
     // where the story starts: one rock, one dodo
@@ -151,6 +155,20 @@ export class Terrain {
     const i1 = Math.min(N - 1, i + 1), j1 = Math.min(N - 1, j + 1);
     const a = this.h[j * N + i], b = this.h[j * N + i1], c = this.h[j1 * N + i], d = this.h[j1 * N + i1];
     return a + (b - a) * tx + (c - a) * tz + (a - b - c + d) * tx * tz;
+  }
+
+  /** dodos trample the undergrowth where they stand, so they stay in sight */
+  trample(x: number, z: number, radius: number, amount: number) {
+    const ci = Math.round((x + WORLD / 2) / CELL - 0.5);
+    const cj = Math.round((z + WORLD / 2) / CELL - 0.5);
+    const rc = Math.ceil(radius / CELL);
+    for (let j = Math.max(0, cj - rc); j <= Math.min(N - 1, cj + rc); j++) {
+      for (let i = Math.max(0, ci - rc); i <= Math.min(N - 1, ci + rc); i++) {
+        const [wx, wz] = this.toWorld(i, j);
+        const d = Math.hypot(wx - x, wz - z) / radius;
+        if (d < 1) this.veg[j * N + i] *= 1 - amount * (1 - d * d);
+      }
+    }
   }
 
   /** lava heat at the nearest cell */
@@ -378,24 +396,30 @@ export class Terrain {
     }
     this.landOrder = n;
     this.reshaped = false;
-    // where the land falls away, follow the steepest way down rather than the flood's
+    // where the land falls away, follow the steepest way down rather than the
+    // flood's. Only strictly lower cells count (so water can never loop), but the
+    // choice among them is nudged by a fixed wander field, so rivers meander
+    // instead of running down a smooth slope like a ruler.
+    const J = this.wander;
     for (let c = 0; c < n; c++) {
       const k = order[c];
       const i = k % N, j = (k - i) / N;
       const f = F[k];
-      let best = 0;
+      const fj = f + J[k];
+      let best = -Infinity;
       let to = -1;
       for (let o = 0; o < 8; o++) {
         const ni = i + DI[o], nj = j + DJ[o];
         if (ni < 0 || nj < 0 || ni >= N || nj >= N) continue;
         const q = nj * N + ni;
-        const d = (f - F[q]) * DW[o];
+        if (f - F[q] <= 2e-5) continue;
+        const d = (fj - F[q] - J[q]) * DW[o];
         if (d > best) {
           best = d;
           to = q;
         }
       }
-      if (to >= 0 && best > 2e-5) R[k] = to;
+      if (to >= 0) R[k] = to;
     }
   }
 

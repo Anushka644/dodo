@@ -165,6 +165,7 @@ export class Flock {
       d.x = Math.max(-5.8, Math.min(5.8, d.x));
       d.z = Math.max(-5.8, Math.min(5.8, d.z));
       const g = T.sample(d.x, d.z);
+      if (g > SEA) T.trample(d.x, d.z, 0.16, Math.min(1, dt * 3));
       const targetY = Math.max(g, SEA - 0.035); // floating, mostly submerged
       d.y += (targetY - d.y) * Math.min(1, dt * 10);
     }
