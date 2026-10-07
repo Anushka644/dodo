@@ -32,8 +32,8 @@ const LOG: Record<Milestone, string> = {
 };
 
 // while your hand is in the world, the hints are about the hand
-function handHint(hud: IslandHud, carried: boolean): string {
-  if (hud.hand === 'starting') return 'Waking the camera…';
+function handHint(hud: IslandHud, carried: boolean, status: string): string {
+  if (hud.hand === 'starting') return status || 'Waking the camera…';
   if (hud.hand === 'looking') return 'Hold your hand up to the camera, palm towards it.';
   if (hud.riders > 0) return 'It’s riding your hand. Tip it, and off it slides — dodos can’t fly.';
   if (!carried) return 'Reach towards the screen to lower your hand. Palm up, low, beside a dodo — and wait.';
@@ -59,6 +59,8 @@ export function App() {
   const [ending, setEnding] = useState(false);
   const [carried, setCarried] = useState(false);
   const [handBusy, setHandBusy] = useState(false);
+  const [handStatus, setHandStatus] = useState('');
+  const handBusyRef = useRef(false);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const mirror = useRef<PaperMirror | null>(null);
   const plates = useRef(0);
@@ -234,28 +236,78 @@ export function App() {
   // lend a hand: the camera, the tracker, and the mirror printed by Paper Shaders
   const toggleHand = async () => {
     const engine = engineRef.current;
-    if (!engine || handBusy) return;
+    if (!engine) return;
     sound.wake();
-    if (engine.handActive) {
+    // while it's starting, the button cancels
+    if (handBusyRef.current || engine.handActive) {
       mirror.current?.dispose();
       mirror.current = null;
       engine.disableHand();
       return;
     }
+    handBusyRef.current = true;
     setHandBusy(true);
     try {
-      const video = await engine.enableHand();
-      const { ink, paper } = engine.mirrorInks();
-      if (mirrorRef.current) mirror.current = await PaperMirror.create(mirrorRef.current, video, ink, paper);
+      const video = await engine.enableHand(setHandStatus);
+      // the mirror is a nicety: if it can't start, the hand still works
+      try {
+        const { ink, paper } = engine.mirrorInks();
+        if (mirrorRef.current) mirror.current = await PaperMirror.create(mirrorRef.current, video, ink, paper);
+      } catch (err) {
+        console.warn('[mirror]', err);
+      }
     } catch (e) {
-      console.warn('[hand]', e);
-      engine.disableHand();
-      const denied = e instanceof DOMException && (e.name === 'NotAllowedError' || e.name === 'SecurityError');
-      flash(denied ? 'The camera stayed closed. The island works without it.' : 'No camera here. The island works without it.');
+      const name = e instanceof DOMException ? e.name : '';
+      if (name !== 'AbortError') {
+        console.warn('[hand]', e);
+        engine.disableHand();
+        flash(
+          !window.isSecureContext || !navigator.mediaDevices
+            ? 'The camera needs a secure (https) page.'
+            : name === 'NotAllowedError' || name === 'SecurityError'
+              ? 'The camera stayed closed. Allow it from the address bar to lend a hand.'
+              : name === 'NotFoundError' || name === 'OverconstrainedError'
+                ? 'No camera here. The island works without it.'
+                : name === 'NotReadableError'
+                  ? 'Another app is using the camera.'
+                  : 'Hand tracking couldn’t load. The island works without it.',
+        );
+      }
     } finally {
+      handBusyRef.current = false;
       setHandBusy(false);
+      setHandStatus('');
     }
   };
+
+  // a hidden tab gives the camera back; and a camera that goes away by itself says so
+  useEffect(() => {
+    let away = false;
+    const onVis = () => {
+      const e = engineRef.current;
+      if (!e) return;
+      if (document.visibilityState === 'hidden') {
+        if (!e.handActive || handBusyRef.current) return;
+        mirror.current?.dispose();
+        mirror.current = null;
+        e.disableHand();
+        away = true;
+      } else if (away) {
+        away = false;
+        flash('The camera closed while you were away. Lend a hand again?');
+      }
+    };
+    document.addEventListener('visibilitychange', onVis);
+    const e = engineRef.current;
+    if (e) {
+      e.onHandLost = () => {
+        mirror.current?.dispose();
+        mirror.current = null;
+        flash('The camera went away. Lend a hand again when it’s back.');
+      };
+    }
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [ready]);
 
   // the mirror prints in the island's inks as the day turns
   useEffect(() => {
@@ -325,8 +377,8 @@ export function App() {
           <div className="title-note">Last seen in 1662. Still here, on the island you made.</div>
         </div>
       ) : handOn && hud ? (
-        <p className="hint" key={`hand-${handHint(hud, carried)}`}>
-          {handHint(hud, carried)}
+        <p className="hint" key={`hand-${handHint(hud, carried, handStatus)}`}>
+          {handHint(hud, carried, handStatus)}
         </p>
       ) : (
         <p className="hint" key={hint}>
@@ -389,12 +441,12 @@ export function App() {
             Hold for rain
           </button>
 
-          <button className={`handbtn mono ${handOn ? 'is-on' : ''}`} onClick={toggleHand} disabled={handBusy} aria-pressed={handOn} title="Put your own hand into the world (uses the camera)">
+          <button className={`handbtn mono ${handOn ? 'is-on' : ''}`} onClick={toggleHand} aria-pressed={handOn} title="Put your own hand into the world (uses the camera)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
               <path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4a1.5 1.5 0 0 1 3 0v7M14 11V5.5a1.5 1.5 0 0 1 3 0V13" />
               <path d="M17 9.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1a7 7 0 0 1-5.6-2.8L3.6 14.5a1.6 1.6 0 0 1 2.5-2L8 15" />
             </svg>
-            {handBusy ? 'Opening…' : handOn ? 'Take back your hand' : 'Lend a hand'}
+            {handBusy ? 'Cancel' : handOn ? 'Take back your hand' : 'Lend a hand'}
           </button>
         </div>
 

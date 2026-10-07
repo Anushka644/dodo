@@ -569,7 +569,7 @@ button {
     justify-content: center;
   }
   .mirror {
-    top: 74px;
+    top: 108px;
     right: 14px;
     bottom: auto;
     width: 120px;
@@ -594,6 +594,26 @@ button {
     width: calc(100vw - 28px);
     text-align: center;
     font-size: 14px;
+  }
+}
+
+/* mid-width screens: the mirror moves up, out of the hint's way */
+@media (min-width: 641px) and (max-width: 1000px) {
+  .mirror {
+    top: 104px;
+    bottom: auto;
+  }
+}
+
+@media (min-width: 641px) and (max-height: 520px) {
+  .mirror {
+    top: 104px;
+    bottom: auto;
+    width: 120px;
+  }
+  .mirror-print {
+    width: 120px;
+    height: 90px;
   }
 }
 

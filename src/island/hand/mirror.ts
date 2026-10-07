@@ -20,6 +20,7 @@ export class PaperMirror {
   private raf = 0;
   private lastTime = -1;
   private disposed = false;
+  private aspect = 0;
 
   private constructor(
     parent: HTMLElement,
@@ -58,6 +59,7 @@ export class PaperMirror {
       { alpha: false, antialias: false, premultipliedAlpha: false },
       0,
     );
+    this.aspect = seed.naturalWidth / seed.naturalHeight;
     this.loop();
   }
 
@@ -92,6 +94,17 @@ export class PaperMirror {
     if (!gl || !tex) return;
     gl.bindTexture(gl.TEXTURE_2D, tex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, v);
+    // a camera that changes shape (a phone turned on its side) keeps its proportions
+    const ar = v.videoWidth / v.videoHeight;
+    if (ar && Math.abs(ar - this.aspect) > 1e-3) {
+      this.aspect = ar;
+      const m = this.mount as unknown as { program: WebGLProgram; uniformLocations: Record<string, WebGLUniformLocation | null> };
+      const loc = m.uniformLocations?.u_imageAspectRatio;
+      if (loc) {
+        gl.useProgram(m.program);
+        gl.uniform1f(loc, ar);
+      }
+    }
     this.mount.setFrame(performance.now());
   };
 

@@ -182,9 +182,19 @@ export class Flock {
           const u = (d.x - p.c[0]) * p.side[0] + (d.z - p.c[2]) * p.side[2];
           const v = (d.x - p.c[0]) * p.fwd[0] + (d.z - p.c[2]) * p.fwd[2];
           if (Math.abs(u) < p.half + 0.12 && v > -p.len * 0.7 && v < p.len * 0.75) {
-            // it settles in the middle of the palm, side by side with any others
-            const seat = riders + ev.boarded;
-            d.ride = { u: (seat - 1) * p.half * 0.55, v: -p.len * 0.08 };
+            // it settles in the middle of the palm, in whichever seat is furthest from the others
+            const taken = this.dodos.filter((o) => o.ride).map((o) => o.ride!.u);
+            let seat = 0;
+            let gap = -1;
+            for (const k of [0, -1, 1]) {
+              const su = k * p.half * 0.55;
+              const g = taken.length ? Math.min(...taken.map((t) => Math.abs(t - su))) : Infinity;
+              if (g > gap) {
+                gap = g;
+                seat = su;
+              }
+            }
+            d.ride = { u: seat, v: -p.len * 0.08 };
             d.target = null;
             d.honk = 0.7;
             d.rest = 1;
@@ -198,7 +208,8 @@ export class Flock {
         d.rest -= dt;
       } else {
         if (!d.target || Math.hypot(d.target[0] - d.x, d.target[1] - d.z) < 0.05) {
-          d.target = this.landNear(d.x, d.z, swimming ? 2.5 : 1.2);
+          // a dodo adrift far out paddles for any land at all
+          d.target = this.landNear(d.x, d.z, swimming ? 2.5 : 1.2) ?? (swimming ? this.landNear(d.x, d.z, 12) : null);
           if (!swimming) d.rest = Math.random() < 0.5 ? rnd(0.6, 3) : 0;
         }
         if (d.target) {
@@ -259,6 +270,8 @@ export class Flock {
     }
     if (Math.abs(r.u) > p.half + 0.05 || r.v < -p.len * 0.6 || r.v > p.len * 0.85) return letGo();
     const at = hand.palmPoint(r.u, r.v);
+    // carried to the edge of the world, it gets off
+    if (Math.abs(at[0]) > 5.8 || Math.abs(at[2]) > 5.8) return letGo();
     d.x = at[0];
     d.y = at[1];
     d.z = at[2];

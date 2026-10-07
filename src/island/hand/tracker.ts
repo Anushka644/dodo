@@ -47,13 +47,15 @@ export class HandTracker {
   private disposed = false;
   private failures = 0;
 
+  private video: HTMLVideoElement | null = null;
+
   private constructor(
-    private video: HTMLVideoElement,
     private lm: HandLandmarker,
     readonly backend: Delegate,
   ) {}
 
-  static async create(video: HTMLVideoElement, onStatus?: (s: string) => void): Promise<HandTracker> {
+  /** loads the model (no camera needed yet, so it can load while the camera opens) */
+  static async create(onStatus?: (s: string) => void): Promise<HandTracker> {
     onStatus?.('Loading hand tracking…');
     const { FilesetResolver, HandLandmarker } = await import('@mediapipe/tasks-vision');
     const base = import.meta.env.BASE_URL;
@@ -71,7 +73,7 @@ export class HandTracker {
     try {
       lm = await make('GPU');
       warm(lm);
-      return new HandTracker(video, lm, 'GPU');
+      return new HandTracker(lm, 'GPU');
     } catch (e) {
       console.warn('[hand] GPU delegate failed, using the CPU', e);
       try {
@@ -79,9 +81,10 @@ export class HandTracker {
       } catch {
         /* already gone */
       }
+      onStatus?.('Starting hand tracking on the CPU…');
       lm = await make('CPU');
       warm(lm);
-      return new HandTracker(video, lm, 'CPU');
+      return new HandTracker(lm, 'CPU');
     }
   }
 
@@ -89,9 +92,15 @@ export class HandTracker {
    * The hand in the newest camera frame. Returns the last pose while no new
    * frame has arrived, and null once the hand has been gone a moment.
    */
+  /** the camera to watch */
+  attach(video: HTMLVideoElement) {
+    this.video = video;
+    this.lastVideoTime = -1;
+  }
+
   detect(now: number): HandPose | null {
     const v = this.video;
-    if (this.disposed || v.readyState < 2 || !v.videoWidth) return null;
+    if (this.disposed || !v || v.readyState < 2 || !v.videoWidth) return null;
     if (v.currentTime === this.lastVideoTime) return now - this.lastSeen < COAST_MS ? this.last : null;
     this.lastVideoTime = v.currentTime;
     const ts = Math.max(this.lastTs + 1, Math.floor(now));

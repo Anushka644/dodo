@@ -82,6 +82,13 @@ export class WorldHand {
   private anchor: V3 | null = null;
   private tipsLocal: number[] | null = null;
   private lastPose: HandPose | null = null;
+  /** time since the fingers were last read (camera frames are slower than ours) */
+  private fingerDt = 0;
+  /** how big the hand looked when it arrived: that distance from the camera is mid-height */
+  private neutral = 0.18;
+  private sizes: number[] = [];
+  private calibrated = false;
+  private absent = 0;
 
   get visible() {
     return this.present > 0.01;
@@ -109,7 +116,13 @@ export class WorldHand {
 
   update(dt: number, pose: HandPose | null, cam: ViewCam, ground: (x: number, z: number) => number) {
     if (!pose) {
-      // a hand that's gone withdraws upwards as it fades
+      // a hand that's gone withdraws upwards as it fades; gone a while, it's a new arrival
+      this.absent += dt;
+      if (this.absent > 4) {
+        this.calibrated = false;
+        this.sizes = [];
+      }
+      this.tipsLocal = null;
       this.present = Math.max(0, this.present - dt * 1.8);
       if (this.anchor) this.anchor[1] += dt * 0.8;
       if (this.present > 0) this.place(this.lastPose, cam);
@@ -118,7 +131,9 @@ export class WorldHand {
       this.vel = [0, 0, 0];
       return;
     }
+    const fresh = pose !== this.lastPose;
     this.lastPose = pose;
+    this.absent = 0;
     this.present = Math.min(1, this.present + dt * 2.5);
     // a hand the size of a small hill, a little bigger as you pull the camera back
     this.scale = 7 * clamp(Math.sqrt(cam.dist / 5.2), 0.6, 1.6);
@@ -130,20 +145,38 @@ export class WorldHand {
     const nx = clamp((pc.x * 2 - 1) * 1.3, -1, 1);
     const ny = clamp((1 - pc.y * 2) * 1.3, -1, 1);
     const rd = norm(add(cam.fwd, add(mul(cam.right, nx * cam.tanFov * cam.aspect), mul(cam.up, ny * cam.tanFov))));
-    // how far it reaches in: how big the hand looks (wrist to middle knuckle, in frame heights)
-    const size = Math.hypot((img[9].x - img[0].x) * pose.aspect, img[9].y - img[0].y);
-    const reach = smooth(0.1, 0.26, size);
-    // follow that ray in until it comes within `lift` of the ground (or the sea)
-    // reaching right in (a very big hand in the frame) dips it into the sea
-    const dip = smooth(0.26, 0.34, size) * 0.2 * (this.scale / 7);
-    const lift = 0.08 + (1 - reach) * 1.6 * (this.scale / 7);
+    // how far it reaches in: how big the hand looks. Read off whichever palm segment is
+    // least foreshortened (so turning the palm up doesn't look like moving away), in
+    // frame heights per metre, times the hand's real wrist-to-knuckle length
+    const w = pose.world;
+    const metric = (a: number, b: number) => Math.hypot(w[b].x - w[a].x, w[b].y - w[a].y, w[b].z - w[a].z) || 1e-3;
+    const seg = (a: number, b: number) => Math.hypot((img[b].x - img[a].x) * pose.aspect, img[b].y - img[a].y) / metric(a, b);
+    const size = Math.max(seg(0, 9), seg(0, 5), seg(0, 17), seg(5, 17)) * metric(0, 9);
+    // wherever you first hold your hand is mid-height; closer reaches in, further lifts it
+    if (!this.calibrated && fresh && Number.isFinite(size)) {
+      this.sizes.push(size);
+      if (this.sizes.length >= 20) {
+        const sorted = [...this.sizes].sort((a, b) => a - b);
+        this.neutral = clamp(sorted[sorted.length >> 1], 0.12, 0.3);
+        this.calibrated = true;
+      }
+    }
+    const rel = Math.log(Math.max(size, 1e-3) / this.neutral);
+    const reach = smooth(-0.4, 0.25, rel);
+    const S = this.scale / 7;
+    // reaching right in dips it into the sea
+    const dip = smooth(0.25, 0.4, rel) * 0.2 * S;
+    // follow that ray in until it comes within `lift` of the ground (or the sea) — and never
+    // let the band reach the camera, or the hand would land in front of the lens
+    const camAbove = cam.pos[1] - Math.max(0, ground(cam.pos[0], cam.pos[2]));
+    const lift = Math.min(0.08 + (1 - reach) * 1.6 * S, 0.5 * Math.max(camAbove, 0.1));
     const above = (t: number) => {
       const q = add(cam.pos, mul(rd, t));
       const g = ground(q[0], q[2]);
       return q[1] - (Math.max(0, g) + lift - (g <= 0 ? dip : 0));
     };
-    const far = cam.dist * 3;
-    let t = 0.3;
+    const far = cam.dist * 2;
+    let t = 0.2 * cam.dist;
     let prevT = t;
     let found = false;
     for (let i = 0; i < 240 && t < far; i++) {
@@ -162,8 +195,9 @@ export class WorldHand {
       prevT = t;
       t += Math.max(0.02, h * 0.5);
     }
-    // pointing above the horizon: hold it up in the sky, at the island's distance
-    const target = add(cam.pos, mul(rd, found ? t : cam.dist));
+    // pointing above the horizon (or past the world): hold it up at the same far limit,
+    // so it never jumps between the two
+    const target = add(cam.pos, mul(rd, found ? Math.min(t, far) : far));
     const prev = this.anchor;
     if (!this.anchor) this.anchor = target;
     else {
@@ -171,8 +205,15 @@ export class WorldHand {
       this.anchor = add(this.anchor, mul(sub(target, this.anchor), k));
     }
     this.vel = prev ? mul(sub(this.anchor, prev), 1 / Math.max(dt, 1e-3)) : [0, 0, 0];
+    const vs = len(this.vel);
+    if (vs > 6) this.vel = mul(this.vel, 6 / vs);
     this.place(pose, cam);
-    this.readFingers(dt);
+    // the fingers only move when the camera sees them move: read them per camera frame
+    this.fingerDt += dt;
+    if (fresh) {
+      this.readFingers(this.fingerDt);
+      this.fingerDt = 0;
+    }
   }
 
   /** shape: the metric landmarks, turned into the world about the anchor */
@@ -216,7 +257,7 @@ export class WorldHand {
       let speed = 0;
       for (let i = 0; i < local.length; i += 3) speed += Math.hypot(local[i] - this.tipsLocal[i], local[i + 1] - this.tipsLocal[i + 1], local[i + 2] - this.tipsLocal[i + 2]) / dt;
       speed /= 4; // metres per second, per finger
-      const want = smooth(0.1, 0.32, speed);
+      const want = smooth(0.08, 0.26, speed);
       this.wiggle += (want - this.wiggle) * Math.min(1, dt * (want > this.wiggle ? 6 : 1.5));
     }
     this.tipsLocal = local;

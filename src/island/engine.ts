@@ -109,6 +109,9 @@ export class IslandEngine {
   private tracker: HandTracker | null = null;
   private video: HTMLVideoElement | null = null;
   private handState: IslandHud['hand'] = 'off';
+  private handGen = 0;
+  /** the camera went away by itself */
+  onHandLost?: () => void;
   /** a pose to use instead of the camera (tests, and the dev console) */
   debugPose: HandPose | null = null;
   private handJ = new Float32Array(84);
@@ -330,26 +333,44 @@ export class IslandEngine {
     this.rainHeld = on;
   }
 
-  /** lend a hand: open the camera and start tracking. Returns the video (for the mirror). */
+  /** lend a hand: open the camera and load hand tracking, side by side. Returns the video (for the mirror). */
   async enableHand(onStatus?: (s: string) => void): Promise<HTMLVideoElement> {
     if (this.video) return this.video;
+    const gen = ++this.handGen;
     this.handState = 'starting';
-    try {
-      onStatus?.('Opening the camera…');
-      const video = await openCamera();
-      this.video = video;
-      this.tracker = await HandTracker.create(video, onStatus);
-      this.handState = 'looking';
-      sound.wake();
-      islandSound.wake();
-      return video;
-    } catch (e) {
-      this.disableHand();
-      throw e;
+    onStatus?.('Opening the camera…');
+    const [cam, trk] = await Promise.allSettled([openCamera(), HandTracker.create(onStatus)]);
+    const cancelled = gen !== this.handGen;
+    if (cancelled || cam.status === 'rejected' || trk.status === 'rejected') {
+      if (cam.status === 'fulfilled') closeCamera(cam.value);
+      if (trk.status === 'fulfilled') trk.value.dispose();
+      if (!cancelled) this.handState = 'off';
+      throw cancelled ? new DOMException('Cancelled', 'AbortError') : cam.status === 'rejected' ? cam.reason : (trk as PromiseRejectedResult).reason;
     }
+    const video = cam.value;
+    trk.value.attach(video);
+    this.video = video;
+    this.tracker = trk.value;
+    this.handState = 'looking';
+    // a camera that goes away (unplugged, revoked, taken by another app) takes the hand with it
+    const track = (video.srcObject as MediaStream | null)?.getVideoTracks()[0];
+    track?.addEventListener(
+      'ended',
+      () => {
+        if (this.video !== video) return;
+        this.disableHand();
+        this.onHandLost?.();
+      },
+      { once: true },
+    );
+    sound.wake();
+    islandSound.wake();
+    return video;
   }
 
+  /** take the hand back (also cancels one that's still starting) */
   disableHand() {
+    this.handGen++;
     this.tracker?.dispose();
     this.tracker = null;
     closeCamera(this.video);
