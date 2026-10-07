@@ -4,3 +4,6 @@ dist
 .DS_Store
 .vite
 debug/
+
+# agent worktrees
+.claude/worktrees/
