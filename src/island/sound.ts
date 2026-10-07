@@ -198,7 +198,7 @@ class IslandSound {
     }
   }
 
-  /** a hand arrives from the sky: air moving, low to high */
+  /** a gust: air moving, low to high */
   whoosh() {
     const a = sound.audio;
     if (!a) return;
@@ -219,44 +219,33 @@ class IslandSound {
     src.start(t, Math.random() * 1.5, 0.9);
   }
 
-  /** a fingertip touches the water */
-  plink(pitch = 1) {
-    const a = sound.audio;
-    if (!a) return;
-    const { ctx, master } = a;
-    const t = ctx.currentTime;
-    const o = ctx.createOscillator();
-    o.type = 'sine';
-    o.frequency.setValueAtTime(1500 * pitch, t);
-    o.frequency.exponentialRampToValueAtTime(520 * pitch, t + 0.09);
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.07, t + 0.006);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.14);
-    o.connect(g).connect(master);
-    o.start(t);
-    o.stop(t + 0.16);
-  }
+  private windLoop: { src: AudioBufferSourceNode; filter: BiquadFilterNode; gain: GainNode } | null = null;
 
-  /** a dodo hits the sea */
-  splash() {
+  /** call every frame with the wind's strength: a moving band of air, rising as it blows harder */
+  wind(amount: number) {
     const a = sound.audio;
     if (!a) return;
-    const { ctx, master, noise } = a;
-    const t = ctx.currentTime;
-    const src = ctx.createBufferSource();
-    src.buffer = noise;
-    const f = ctx.createBiquadFilter();
-    f.type = 'lowpass';
-    f.frequency.setValueAtTime(2400, t);
-    f.frequency.exponentialRampToValueAtTime(300, t + 0.35);
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(0.18, t + 0.01);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.4);
-    src.connect(f).connect(g).connect(master);
-    src.start(t, Math.random() * 1.5, 0.45);
-    window.setTimeout(() => this.honk(0.85), 240);
+    if (!this.windLoop && amount > 0.01) {
+      const { ctx, master, noise } = a;
+      const src = ctx.createBufferSource();
+      src.buffer = noise;
+      src.loop = true;
+      src.playbackRate.value = 0.7;
+      const filter = ctx.createBiquadFilter();
+      filter.type = 'bandpass';
+      filter.Q.value = 1.6;
+      filter.frequency.value = 400;
+      const gain = ctx.createGain();
+      gain.gain.value = 0;
+      src.connect(filter).connect(gain).connect(master);
+      src.start();
+      this.windLoop = { src, filter, gain };
+    }
+    if (!this.windLoop) return;
+    const t = a.ctx.currentTime;
+    this.windLoop.gain.gain.setTargetAtTime(amount * 0.16, t, 0.25);
+    // gusts: the band wanders
+    this.windLoop.filter.frequency.setTargetAtTime(380 + amount * 700 + Math.sin(t * 1.7) * 120 * amount, t, 0.3);
   }
 
   /** an egg cracks somewhere on the island */

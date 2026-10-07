@@ -1,10 +1,8 @@
 import { SEA, type Terrain } from './terrain';
-import type { WorldHand } from './hand/hand';
 
 // The dodos. They want land, they waddle, they stop to look around, and
 // they don't fly. If you drown their ground they float, slightly offended.
-// Offer them a hand, palm up and low, and the curious ones climb aboard; tip
-// it and they slide off and flutter down (still not flying).
+// They look up at the weather, too: a sudden storm, or the sun coming out.
 
 export const MAX_DODOS = 12;
 
@@ -20,24 +18,8 @@ export interface Dodo {
   honk: number; // 0..1, decays: a startled hop and flap
   born: number; // 0..1, grows in after hatching
   flee: number; // seconds left running from lava
-  /** standing on your hand: where on the palm (across, along) */
-  ride: { u: number; v: number } | null;
-  /** tumbling through the air */
-  fall: { vx: number; vy: number; vz: number } | null;
   alive: boolean;
 }
-
-/** what happened this step, for sounds and the log */
-export interface FlockEvents {
-  startled: number;
-  boarded: number;
-  dropped: number;
-  landed: number;
-  splashed: number;
-}
-
-/** how many dodos a hand can hold */
-const SEATS = 3;
 
 const rnd = (a: number, b: number) => a + Math.random() * (b - a);
 
@@ -67,8 +49,6 @@ export class Flock {
       honk: grown ? 0 : 1,
       born: grown ? 1 : 0,
       flee: 0,
-      ride: null,
-      fall: null,
       alive: true,
     };
     this.dodos.push(d);
@@ -136,26 +116,14 @@ export class Flock {
     return best;
   }
 
-  /** one step of every dodo's life; the hand, if there is one, can carry them */
-  step(dt: number, hand: WorldHand | null = null): FlockEvents {
+  /** one step of every dodo's life; returns how many were startled (by lava underfoot) */
+  step(dt: number): number {
     const T = this.terrain;
-    const ev: FlockEvents = { startled: 0, boarded: 0, dropped: 0, landed: 0, splashed: 0 };
-    const riders = this.dodos.filter((d) => d.ride).length;
+    let startled = 0;
     for (const d of this.dodos) {
       d.born = Math.min(1, d.born + dt * 1.5);
       d.honk = Math.max(0, d.honk - dt * 1.6);
       d.flee = Math.max(0, d.flee - dt);
-
-      if (d.ride) {
-        if (this.ride(d, dt, hand)) ev.dropped++;
-        continue;
-      }
-      if (d.fall) {
-        const landed = this.tumble(d, dt);
-        if (landed === 'land') ev.landed++;
-        if (landed === 'sea') ev.splashed++;
-        continue;
-      }
 
       const ground = T.sample(d.x, d.z);
       const swimming = ground < SEA + 0.005;
@@ -165,43 +133,7 @@ export class Flock {
         d.honk = 1;
         d.rest = 0;
         d.target = this.safeFrom(d.x, d.z);
-        ev.startled++;
-      }
-
-      // a hand held out low and palm up: the curious walk over, and hop on
-      if (hand?.offering && !swimming && d.born >= 1 && d.flee <= 0 && riders + ev.boarded < SEATS) {
-        const p = hand.palm;
-        const rest = hand.palmPoint(0, 0);
-        const low = rest[1] - Math.max(SEA, T.sample(p.c[0], p.c[2])) < 0.32;
-        const dx = p.c[0] - d.x, dz = p.c[2] - d.z;
-        const dist = Math.hypot(dx, dz);
-        if (low && dist < 1.1) {
-          d.target = [p.c[0], p.c[2]];
-          d.rest = 0;
-          // on the palm, or near enough to its edge to hop up
-          const u = (d.x - p.c[0]) * p.side[0] + (d.z - p.c[2]) * p.side[2];
-          const v = (d.x - p.c[0]) * p.fwd[0] + (d.z - p.c[2]) * p.fwd[2];
-          if (Math.abs(u) < p.half + 0.12 && v > -p.len * 0.7 && v < p.len * 0.75) {
-            // it settles in the middle of the palm, in whichever seat is furthest from the others
-            const taken = this.dodos.filter((o) => o.ride).map((o) => o.ride!.u);
-            let seat = 0;
-            let gap = -1;
-            for (const k of [0, -1, 1]) {
-              const su = k * p.half * 0.55;
-              const g = taken.length ? Math.min(...taken.map((t) => Math.abs(t - su))) : Infinity;
-              if (g > gap) {
-                gap = g;
-                seat = su;
-              }
-            }
-            d.ride = { u: seat, v: -p.len * 0.08 };
-            d.target = null;
-            d.honk = 0.7;
-            d.rest = 1;
-            ev.boarded++;
-            continue;
-          }
-        }
+        startled++;
       }
 
       if (d.rest > 0 && !swimming) {
@@ -240,66 +172,12 @@ export class Flock {
       const targetY = Math.max(g, SEA - 0.035); // floating, mostly submerged
       d.y += (targetY - d.y) * Math.min(1, dt * 10);
     }
-    return ev;
+    return startled;
   }
 
-  /** riding the palm; returns true if it just fell off */
-  private ride(d: Dodo, dt: number, hand: WorldHand | null): boolean {
-    const r = d.ride!;
-    const letGo = () => {
-      const v = hand?.vel ?? [0, 0, 0];
-      d.fall = { vx: v[0] * 0.6, vy: Math.max(0.4, v[1] * 0.6 + 0.6), vz: v[2] * 0.6 };
-      d.ride = null;
-      d.honk = 1;
-      return true;
-    };
-    if (!hand || hand.present < 0.5) return letGo();
-    const p = hand.palm;
-    // a palm turned over drops everything at once
-    if (p.n[1] < 0.15) return letGo();
-    // tipped further than a hand held up naturally leans, it slides them towards the low side
-    if (p.n[1] < 0.6) {
-      const g = 5 * (0.6 - p.n[1]);
-      // "down" in the palm's plane, in palm coordinates
-      r.u += -p.side[1] * g * dt;
-      r.v += -p.fwd[1] * g * dt;
-      d.walk += dt * 14;
-    } else if (Math.random() < dt * 0.4) {
-      // a look around now and then
-      d.heading += (Math.random() - 0.5) * 1.6;
-    }
-    if (Math.abs(r.u) > p.half + 0.05 || r.v < -p.len * 0.6 || r.v > p.len * 0.85) return letGo();
-    const at = hand.palmPoint(r.u, r.v);
-    // carried to the edge of the world, it gets off
-    if (Math.abs(at[0]) > 5.8 || Math.abs(at[2]) > 5.8) return letGo();
-    d.x = at[0];
-    d.y = at[1];
-    d.z = at[2];
-    return false;
-  }
-
-  /** falling: flapping hard and achieving nothing; returns where it came down, if it did */
-  private tumble(d: Dodo, dt: number): 'land' | 'sea' | null {
-    const f = d.fall!;
-    f.vy -= 3.2 * dt;
-    // the wings do slow it, a little
-    f.vy = Math.max(f.vy, -2.2);
-    d.x += f.vx * dt;
-    d.y += f.vy * dt;
-    d.z += f.vz * dt;
-    f.vx *= 1 - dt * 0.8;
-    f.vz *= 1 - dt * 0.8;
-    d.honk = Math.max(d.honk, 0.8);
-    d.x = Math.max(-5.8, Math.min(5.8, d.x));
-    d.z = Math.max(-5.8, Math.min(5.8, d.z));
-    const g = this.terrain.sample(d.x, d.z);
-    const floor = Math.max(g, SEA - 0.035);
-    if (d.y > floor) return null;
-    d.y = floor;
-    d.fall = null;
-    d.target = null;
-    d.rest = 1.2;
-    return g < SEA + 0.005 ? 'sea' : 'land';
+  /** everyone looks up and flaps (a storm breaking, the sun coming out) */
+  startle(amount = 1) {
+    for (const d of this.dodos) if (d.born >= 1 && Math.random() < 0.7) d.honk = Math.max(d.honk, amount * (0.6 + Math.random() * 0.4));
   }
 
   /** packed for the shader: position + heading, and walk/bob/flap/alive */
@@ -307,7 +185,7 @@ export class Flock {
     const pos = new Float32Array(MAX_DODOS * 4);
     const anim = new Float32Array(MAX_DODOS * 4);
     this.dodos.forEach((d, i) => {
-      const swimming = !d.ride && !d.fall && this.terrain.sample(d.x, d.z) < SEA + 0.005;
+      const swimming = this.terrain.sample(d.x, d.z) < SEA + 0.005;
       pos.set([d.x, d.y, d.z, d.heading], i * 4);
       const hop = Math.sin(d.honk * Math.PI) * 0.02;
       const bob = (swimming ? Math.sin(time * 2.4 + i) * 0.004 : 0) + hop - (1 - d.born) * 0.12;

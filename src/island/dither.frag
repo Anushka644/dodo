@@ -21,7 +21,7 @@ uniform sampler2D tNoise;   // 64×64 blue noise
 uniform sampler2D tPaper;   // 256×256, tiling: r tooth, g ink mottle
 uniform vec2 uWorldRes;     // texels
 uniform float uPx;          // device pixels per texel
-uniform vec3 uRamp[60];     // 10 materials × 6 inks, dark → light (see MATERIALS)
+uniform vec3 uRamp[54];     // 9 materials × 6 inks, dark → light (see MATERIALS)
 uniform float uSteps;       // steps in each ramp: 5 for a spot-colour run, fewer for plates
 uniform vec3 uAccent;       // the one colour that glows
 uniform float uPattern;     // 0 halftone · 1 grain (blue noise) · 2 bayer · 3 engraving lines

@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
-import { IslandEngine, type IslandHud, type Milestone } from './island/engine';
+import { IslandEngine, WIND_HEAD, type IslandHud, type Milestone } from './island/engine';
 import { PALETTES, PATTERNS } from './island/palettes';
 import { makePlate, roman } from './island/plate';
-import { PaperMirror } from './island/hand/mirror';
+import { PaperMirror } from './island/face/mirror';
 import { sound } from './sound';
 
 const HINTS = [
@@ -26,19 +26,38 @@ const LOG: Record<Milestone, string> = {
   lake: 'A hollow fills and becomes a lake.',
   half: 'Forest over half the island.',
   safe: 'Twelve dodos. Enough to stay.',
-  hand: 'A hand, out of the sky.',
-  carried: 'A dodo rides in the palm of a hand.',
-  shower: 'Rain, from the fingertips of a hand.',
+  face: 'A face in the sky, watching.',
+  sunshine: 'A smile, and the sun came out.',
+  storm: 'A frown, and the sky broke.',
+  sleep: 'Eyes closed, and the night came down.',
+  wind: 'A face blew from the corner of the sky, as on the old charts.',
+  roar: 'A roar, and the mountain answered.',
 };
 
-// while your hand is in the world, the hints are about the hand
-function handHint(hud: IslandHud, carried: boolean, status: string): string {
-  if (hud.hand === 'starting') return status || 'Waking the camera…';
-  if (hud.hand === 'looking') return 'Hold your hand up to the camera, palm towards it.';
-  if (hud.riders > 0) return 'It’s riding your hand. Tip it, and off it slides — dodos can’t fly.';
-  if (!carried) return 'Reach towards the screen to lower your hand. Palm up, low, beside a dodo — and wait.';
-  return 'Wiggle your fingers to make it rain. Lower your hand into the sea.';
+// while your face is the weather, the hints teach it one expression at a time
+const FACE_STEPS: [Milestone, string][] = [
+  ['sunshine', 'Smile.'],
+  ['storm', 'Now frown.'],
+  ['sleep', 'Close your eyes for a moment.'],
+  ['wind', 'Puff out your cheeks and blow.'],
+  ['roar', 'Open wide, and roar.'],
+];
+
+function faceHint(hud: IslandHud, tried: Set<Milestone>, status: string): string {
+  if (hud.face === 'starting') return status || 'Waking the camera…';
+  if (hud.face === 'looking') return 'Look at the camera.';
+  const next = FACE_STEPS.find(([m]) => !tried.has(m));
+  return next ? next[1] : 'Move your head: the island sits behind the glass.';
 }
+
+// the legend under the mirror: each expression and what it does to the island
+const LEGEND: [keyof IslandHud['expr'], string, string][] = [
+  ['smile', 'Smile', 'sun'],
+  ['frown', 'Frown', 'rain'],
+  ['closed', 'Close your eyes', 'night'],
+  ['blow', 'Puff and blow', 'wind'],
+  ['roar', 'Open wide', 'eruption'],
+];
 
 interface Entry {
   id: number;
@@ -57,10 +76,10 @@ export function App() {
   const [hint, setHint] = useState(0);
   const [log, setLog] = useState<Entry[]>([{ id: 0, stamp: 'D1 06:40', text: 'The last dodo, alone on a rock.' }]);
   const [ending, setEnding] = useState(false);
-  const [carried, setCarried] = useState(false);
-  const [handBusy, setHandBusy] = useState(false);
-  const [handStatus, setHandStatus] = useState('');
-  const handBusyRef = useRef(false);
+  const [tried, setTried] = useState<Set<Milestone>>(new Set());
+  const [faceBusy, setFaceBusy] = useState(false);
+  const [faceStatus, setFaceStatus] = useState('');
+  const faceBusyRef = useRef(false);
   const mirrorRef = useRef<HTMLDivElement>(null);
   const mirror = useRef<PaperMirror | null>(null);
   const plates = useRef(0);
@@ -89,7 +108,7 @@ export function App() {
     engine.onMilestone = (m, day, hour) => {
       const id = logId.current++;
       setLog((l) => [...l, { id, stamp: `D${day} ${hour}`, text: LOG[m] }].slice(-4));
-      if (m === 'carried') setCarried(true);
+      setTried((t) => new Set(t).add(m));
       if (m === 'safe') {
         setEnding(true);
         window.setTimeout(() => setEnding(false), 9000);
@@ -233,23 +252,23 @@ export function App() {
     setSoundOn(next);
   };
 
-  // lend a hand: the camera, the tracker, and the mirror printed by Paper Shaders
-  const toggleHand = async () => {
+  // lend your face: the camera, the tracker, and the mirror printed by Paper Shaders
+  const toggleFace = async () => {
     const engine = engineRef.current;
     if (!engine) return;
     sound.wake();
     // while it's starting, the button cancels
-    if (handBusyRef.current || engine.handActive) {
+    if (faceBusyRef.current || engine.faceActive) {
       mirror.current?.dispose();
       mirror.current = null;
-      engine.disableHand();
+      engine.disableFace();
       return;
     }
-    handBusyRef.current = true;
-    setHandBusy(true);
+    faceBusyRef.current = true;
+    setFaceBusy(true);
     try {
-      const video = await engine.enableHand(setHandStatus);
-      // the mirror is a nicety: if it can't start, the hand still works
+      const video = await engine.enableFace(setFaceStatus);
+      // the mirror is a nicety: if it can't start, the face still works
       try {
         const { ink, paper } = engine.mirrorInks();
         if (mirrorRef.current) mirror.current = await PaperMirror.create(mirrorRef.current, video, ink, paper);
@@ -259,24 +278,24 @@ export function App() {
     } catch (e) {
       const name = e instanceof DOMException ? e.name : '';
       if (name !== 'AbortError') {
-        console.warn('[hand]', e);
-        engine.disableHand();
+        console.warn('[face]', e);
+        engine.disableFace();
         flash(
           !window.isSecureContext || !navigator.mediaDevices
             ? 'The camera needs a secure (https) page.'
             : name === 'NotAllowedError' || name === 'SecurityError'
-              ? 'The camera stayed closed. Allow it from the address bar to lend a hand.'
+              ? 'The camera stayed closed. Allow it from the address bar to lend your face.'
               : name === 'NotFoundError' || name === 'OverconstrainedError'
                 ? 'No camera here. The island works without it.'
                 : name === 'NotReadableError'
                   ? 'Another app is using the camera.'
-                  : 'Hand tracking couldn’t load. The island works without it.',
+                  : 'Face tracking couldn’t load. The island works without it.',
         );
       }
     } finally {
-      handBusyRef.current = false;
-      setHandBusy(false);
-      setHandStatus('');
+      faceBusyRef.current = false;
+      setFaceBusy(false);
+      setFaceStatus('');
     }
   };
 
@@ -287,23 +306,23 @@ export function App() {
       const e = engineRef.current;
       if (!e) return;
       if (document.visibilityState === 'hidden') {
-        if (!e.handActive || handBusyRef.current) return;
+        if (!e.faceActive || faceBusyRef.current) return;
         mirror.current?.dispose();
         mirror.current = null;
-        e.disableHand();
+        e.disableFace();
         away = true;
       } else if (away) {
         away = false;
-        flash('The camera closed while you were away. Lend a hand again?');
+        flash('The camera closed while you were away. Lend your face again?');
       }
     };
     document.addEventListener('visibilitychange', onVis);
     const e = engineRef.current;
     if (e) {
-      e.onHandLost = () => {
+      e.onFaceLost = () => {
         mirror.current?.dispose();
         mirror.current = null;
-        flash('The camera went away. Lend a hand again when it’s back.');
+        flash('The camera went away. Lend your face again when it’s back.');
       };
     }
     return () => document.removeEventListener('visibilitychange', onVis);
@@ -320,15 +339,16 @@ export function App() {
       }
     }, 1000);
     return () => window.clearInterval(id);
-  }, [hud?.hand]);
+  }, [hud?.face]);
 
   const engine = engineRef.current;
-  const handOn = !!hud && hud.hand !== 'off';
+  const faceOn = !!hud && hud.face !== 'off';
+  const windy = faceOn && !!hud?.expr.blow;
   const land = hud ? (hud.land * 0.8).toFixed(1) : '0.0';
   const forest = hud && hud.land > 0.05 ? Math.min(100, Math.round((hud.forest / hud.land) * 100)) : 0;
 
   return (
-    <div className={`app ${ready ? 'is-ready' : ''} mode-${hud?.mode ?? 'idle'}`}>
+    <div className={`app ${ready ? 'is-ready' : ''} mode-${hud?.mode ?? 'idle'} ${windy ? `is-windy wind-${hud?.windSide}` : ''}`}>
       <canvas
         ref={canvasRef}
         className="stage"
@@ -376,9 +396,9 @@ export function App() {
           <div className="title-line">Not extinct.</div>
           <div className="title-note">Last seen in 1662. Still here, on the island you made.</div>
         </div>
-      ) : handOn && hud ? (
-        <p className="hint" key={`hand-${handHint(hud, carried, handStatus)}`}>
-          {handHint(hud, carried, handStatus)}
+      ) : faceOn && hud ? (
+        <p className="hint" key={`face-${faceHint(hud, tried, faceStatus)}`}>
+          {faceHint(hud, tried, faceStatus)}
         </p>
       ) : (
         <p className="hint" key={hint}>
@@ -386,9 +406,21 @@ export function App() {
         </p>
       )}
 
-      <figure className={`mirror ${handOn ? 'is-on' : ''}`} aria-hidden={!handOn}>
+      <figure
+        className={`mirror ${faceOn ? 'is-on' : ''} ${windy ? `is-wind ${hud?.windSide}` : ''}`}
+        aria-hidden={!faceOn}
+        style={{ '--wx': `${WIND_HEAD.x * 100}vw`, '--wy': `${WIND_HEAD.y * 100}vh` } as React.CSSProperties}
+      >
         <div className="mirror-print" ref={mirrorRef} />
         <figcaption className="mono">You, printed by Paper Shaders</figcaption>
+        <ul className="legend mono" aria-label="What your face does">
+          {LEGEND.map(([k, face, does]) => (
+            <li key={k} className={hud?.expr[k] ? 'is-on' : ''}>
+              <span>{face}</span>
+              <span className="does">{does}</span>
+            </li>
+          ))}
+        </ul>
       </figure>
 
       <ol className="log" aria-label="Log">
@@ -441,12 +473,13 @@ export function App() {
             Hold for rain
           </button>
 
-          <button className={`handbtn mono ${handOn ? 'is-on' : ''}`} onClick={toggleHand} aria-pressed={handOn} title="Put your own hand into the world (uses the camera)">
+          <button className={`facebtn mono ${faceOn ? 'is-on' : ''}`} onClick={toggleFace} aria-pressed={faceOn} title="Your face becomes the island's weather (uses the camera)">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-              <path d="M8 13V5.5a1.5 1.5 0 0 1 3 0V12M11 11V4a1.5 1.5 0 0 1 3 0v7M14 11V5.5a1.5 1.5 0 0 1 3 0V13" />
-              <path d="M17 9.5a1.5 1.5 0 0 1 3 0V14a7 7 0 0 1-7 7h-1a7 7 0 0 1-5.6-2.8L3.6 14.5a1.6 1.6 0 0 1 2.5-2L8 15" />
+              <circle cx="12" cy="12" r="8.5" />
+              <path d="M8.5 14.5c1 1.4 2.2 2 3.5 2s2.5-.6 3.5-2" />
+              <path d="M9 9.5h.01M15 9.5h.01" />
             </svg>
-            {handBusy ? 'Cancel' : handOn ? 'Take back your hand' : 'Lend a hand'}
+            {faceBusy ? 'Cancel' : faceOn ? 'Take back your face' : 'Lend your face'}
           </button>
         </div>
 

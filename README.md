@@ -22,15 +22,16 @@ at night the surf glows.
 
 Raise twelve dodos and the species isn't extinct any more, at least here.
 
-**Lend a hand** puts your own hand into the world. The webcam watches it, and
-a giant printed hand reaches into the island where you see yours in the
-mirror, coming out of a cloud the way hands do in old emblem books and on the
-corners of sea charts. Reach towards the screen and it lowers. Hold it palm up
-and low beside a dodo, and wait: the curious ones climb aboard. Carry them
-across the water; tip your hand and they slide off and flutter down (they
-still can't fly). Your hand casts a real shadow. Wiggle your fingers and it
-rains under your hand alone, and the forest grows there. Lay it on the sea
-and rings spread out, glowing at night.
+**Lend your face** and you become the island's weather. Smile and the sun
+comes out; at night, it rises for you. Frown and the sky breaks into rain.
+Close your eyes for a moment and night falls, so you open them to the stars.
+Puff out your cheeks and blow: your face flies up into a corner of the sky as
+a wind head, the cheek-puffed face that blows the winds on old sea charts,
+and lines of breath stream across the island, whitecaps break on the sea, the
+clouds race and the smoke leans. Open wide and roar, and the mountain answers
+with an eruption. Move your head and the island shifts, as if it sat behind
+the glass. A small legend by the mirror lights up each expression as the
+camera sees it.
 
 The whole world is drawn as a print: four inks and one fluorescent spot
 colour, put down through an ordered dither, like an engraving that happens to
@@ -47,7 +48,7 @@ history, with a caption of what's on the island.
 | **Click a dodo** | say hello |
 | **1–5** · **P** · **[ ]** | inks · print pattern · dot size |
 | **H** | back home |
-| **Lend a hand** (webcam) | palm up and low: dodos climb on · tip: they slide off · wiggle fingers: rain · touch the sea: ripples |
+| **Lend your face** (webcam) | smile: sun · frown: rain · eyes closed: night · puff and blow: wind · open wide: eruption · move your head: look around |
 
 On a touchscreen: one finger sculpts, two fingers turn and zoom.
 
@@ -66,15 +67,16 @@ pattern effects, though, and an island you can sculpt needs a raymarched 3D
 world with a simulation under it, so the world has its own shader, with
 dithering as the whole renderer. Paper Shaders does appear where it fits:
 the camera mirror is your webcam printed live through its `HalftoneDots`
-shader, in the island's own inks.
+shader, in the island's own inks; and when you blow, that printed face becomes
+the wind head in the sky.
 
-The hand came last. The camera isn't a replacement for the mouse here. It
-adds the one thing a mouse can't: you are physically in the world, and the
-dodos react to you.
+The camera isn't a replacement for the mouse here. The mouse makes the land;
+your face makes the weather. An expression is something everyone already
+knows how to do, and "a smile brings out the sun" needs no instructions.
 
 ## How it's built
 
-No 3D engine: React for the chrome, one WebGL2 canvas, and about 5,000 lines
+No 3D engine: React for the chrome, one WebGL2 canvas, and about 4,500 lines
 of TypeScript and GLSL.
 
 - **The world is one fragment shader.** It raymarches a heightfield (the land
@@ -106,22 +108,21 @@ of TypeScript and GLSL.
   climb cliffs, float (offended) if you drown their ground, and run, flapping,
   from lava. Seabirds arrive from the sea, circle the island, alternate
   wingbeats and glides, and leave at night.
-- **The hand.** MediaPipe's hand landmarker runs on the webcam (GPU, falling
-  back to CPU), with its runtime and model served from this site, and a One
-  Euro filter on the landmarks. Its metric 3D landmarks become 21 joints in the
-  world, turned so a hand shown to the camera leans back into the scene palm
-  towards you, and placed where the hand appears in the mirror: a bigger
-  hand in the frame is closer to the camera, so it reaches further in. In the
-  shader it's a signed-distance hand (tapered finger bones, a fleshier palm,
-  a cloud cuff) that casts soft shadows on land, sea and dodos and
-  materialises in dithered patches. The palm becomes a little floor dodos can
-  stand on. Finger wiggle, measured in the palm's own frame so moving the
-  hand doesn't count, becomes a local shower that feeds the forest and rivers.
-  Contact with the sea starts ripples.
+- **The face.** MediaPipe's face landmarker runs on the webcam (GPU, falling
+  back to CPU), with its runtime and model served from this site. Its
+  blendshapes (smile, brow-down, blink, cheek-puff and pucker, jaw-open) are
+  eased, and each expression has two thresholds, one to switch on and a lower
+  one to switch off, so nothing flickers. A blink is not a sleep: the eyes
+  have to stay closed for a moment. A laugh is not a roar. Expressions drive
+  the same weather as the mouse and keyboard (rain, sun, the day's clock), plus
+  a wind that runs through the shader: cloud drift, chop and whitecaps, the
+  lean of the smoke, slanted rain, and engraved breath lines streaming from
+  the wind head. The head's position in the mirror turns the view, and leaning
+  in brings the island closer, measured against where your face first settled.
 - **Sound is synthesised** with the Web Audio API: the sea (louder as you get
   closer), the ground groaning as it rises, lava hiss and crackle, rain,
-  thunder with a delay, seabird cries, eggs, the dodo's two-note honk, a
-  whoosh when your hand arrives, and plinks when it touches the water.
+  thunder with a delay, seabird cries, eggs, the dodo's two-note honk, and
+  wind that rises and gusts while you blow.
 - **Small things.** The opening descends through dithered cloud. The chrome
   fades while you work. A log notes each first ("A river finds its way down to
   the sea."). Reduced motion skips the intro. Dot size and inks are live.
@@ -137,10 +138,11 @@ of TypeScript and GLSL.
   could live in the URL, and a plate could link back to the island it shows.
 - **Paper.** Overprint between inks, a little mis-registration, and paper
   texture under the dither, so a printed plate feels like a real risograph.
-- **Two hands.** Cup both hands to carry water and pour it into a crater
-  lake, or shelter the dodos from a storm.
-- **The hand as weather and time.** Hold it over the sun for an eclipse that
-  sends the birds home; a fist closing slowly to bring on dusk.
+- **More of the face.** A wink at night that sends a shooting star across; a
+  sun in the sky that wears your expression; the dodos turning to look at the
+  wind head when it appears.
+- **Sound in.** Hum low to make the ground rumble, whistle to call the birds
+  home.
 
 ## Run it
 

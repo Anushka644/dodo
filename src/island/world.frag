@@ -35,12 +35,8 @@ uniform float uCloud;       // cloud cover 0..1
 uniform float uIntro;       // 0 → 1 opening shot
 uniform vec4 uVent[4];      // smoke over new land: x, base y, z, strength
 uniform vec4 uBird[16];     // seabirds: x, y, z, wing (> 5: away at sea, not drawn)
-uniform vec4 uHandJ[21];    // your hand: 21 joints (x, y, z, radius), MediaPipe's order
-uniform vec4 uHandB;        // a sphere around it (centre, radius; 0 = no hand)
-uniform float uHandOn;      // 0 → 1 as it materialises
-uniform vec4 uRipple[8];    // rings where fingertips touch the sea: x, z, age, strength
-uniform vec4 uShower;       // rain from the hand, on the print: texel x, top y, half-width, amount
-uniform float uShowerFloor; // ... and the texel y where it reaches the ground
+uniform vec4 uWind;         // wind over the world: direction (x, z), strength 0..1, and how far it has blown (for the clouds)
+uniform vec4 uWindHead;     // where on the print the wind head blows from (texel x, y) and its direction on the print
 
 out vec4 outData;
 
@@ -57,7 +53,6 @@ const float M_ROCK = 5.0;
 const float M_FOREST = 6.0;
 const float M_DODO = 7.0;
 const float M_BEAK = 8.0;   // beak and legs
-const float M_HAND = 9.0;   // your hand
 
 // ---------------------------------------------------------------- noise
 
@@ -313,140 +308,6 @@ vec3 dodoNormal(vec3 p, int id) {
   return normalize(n);
 }
 
-// ---------------------------------------------------------------- the hand
-
-// a finger bone: a capsule from joint a to joint b, tapering with the joints
-float bone(vec3 p, int a, int b) {
-  vec4 A = uHandJ[a], B = uHandJ[b];
-  vec3 pa = p - A.xyz, ba = B.xyz - A.xyz;
-  float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
-  return length(pa - ba * h) - mix(A.w, B.w, h);
-}
-
-// the palm is fleshier than the fingers that leave it
-float palmBone(vec3 p, int a, int b) {
-  vec4 A = uHandJ[a], B = uHandJ[b];
-  vec3 pa = p - A.xyz, ba = B.xyz - A.xyz;
-  float h = clamp(dot(pa, ba) / max(dot(ba, ba), 1e-6), 0.0, 1.0);
-  return length(pa - ba * h) - mix(A.w * 0.95, B.w * 1.55, h);
-}
-
-// the cuff: the hand comes out of a cloud, as hands do in old emblem books
-// and on the corners of sea charts, the wrist lost in it, the arm reaching back
-// towards whoever is looking
-// along the forearm from the wrist: away from the knuckles, a little towards the viewer and down
-vec3 cuffDir() {
-  vec3 arm = normalize(uHandJ[0].xyz - uHandJ[9].xyz);
-  vec3 view = normalize(uCamPos - uHandJ[0].xyz);
-  return normalize(arm + view * 0.1 + vec3(0.0, -0.1, 0.0));
-}
-
-vec3 cuffAt(out float S) {
-  S = uHandJ[0].w / 0.168; // the hand's scale, from the wrist's radius
-  return uHandJ[0].xyz + cuffDir() * 0.42 * S;
-}
-
-float cloudCuff(vec3 p) {
-  float S;
-  vec3 c = cuffAt(S);
-  vec3 back = cuffDir();
-  vec3 side = normalize(cross(back, abs(back.y) > 0.95 ? vec3(1.0, 0.0, 0.0) : vec3(0.0, 1.0, 0.0)));
-  vec3 up = cross(side, back);
-  float d = 1e9;
-  for (int i = 0; i < 6; i++) {
-    float a = float(i) * 1.047 + uTime * 0.25 + sin(uTime * 0.7 + float(i)) * 0.2;
-    vec3 o = (side * cos(a) + up * sin(a)) * 0.11 * S + back * (0.06 * sin(float(i) * 2.3)) * S;
-    float r = (0.085 + 0.022 * sin(float(i) * 1.9 + uTime * 0.9)) * S;
-    d = smin(d, length(p - c - o) - r, 0.05 * S);
-  }
-  return smin(d, length(p - c - back * 0.04 * S) - 0.1 * S, 0.05 * S);
-}
-
-// the whole hand; part = 1 skin, 2 cloud
-float handScene(vec3 p, out float part) {
-  float palm = palmBone(p, 0, 5);
-  palm = smin(palm, palmBone(p, 0, 9), 0.03);
-  palm = smin(palm, palmBone(p, 0, 13), 0.03);
-  palm = smin(palm, palmBone(p, 0, 17), 0.03);
-  palm = smin(palm, palmBone(p, 5, 9), 0.03);
-  palm = smin(palm, palmBone(p, 9, 13), 0.03);
-  palm = smin(palm, palmBone(p, 13, 17), 0.03);
-  float f = min(min(bone(p, 0, 1), bone(p, 1, 2)), min(bone(p, 2, 3), bone(p, 3, 4)));
-  f = min(f, min(min(bone(p, 5, 6), bone(p, 6, 7)), bone(p, 7, 8)));
-  f = min(f, min(min(bone(p, 9, 10), bone(p, 10, 11)), bone(p, 11, 12)));
-  f = min(f, min(min(bone(p, 13, 14), bone(p, 14, 15)), bone(p, 15, 16)));
-  f = min(f, min(min(bone(p, 17, 18), bone(p, 18, 19)), bone(p, 19, 20)));
-  float skin = smin(palm, f, 0.035);
-  // a short wrist into the cloud
-  float S;
-  vec3 c = cuffAt(S);
-  vec3 pa = p - uHandJ[0].xyz, ba = c - uHandJ[0].xyz;
-  float h = clamp(dot(pa, ba) / dot(ba, ba), 0.0, 1.0);
-  skin = smin(skin, length(pa - ba * h) - uHandJ[0].w * 1.05, 0.04);
-  float cloud = cloudCuff(p);
-  part = cloud < skin ? 2.0 : 1.0;
-  return min(skin, cloud);
-}
-
-bool handNear(vec3 ro, vec3 rd, float tmax, out float t0, out float t1) {
-  if (uHandB.w <= 0.0) return false;
-  vec3 oc = ro - uHandB.xyz;
-  float b = dot(oc, rd);
-  float disc = b * b - dot(oc, oc) + uHandB.w * uHandB.w;
-  if (disc < 0.0) return false;
-  float s = sqrt(disc);
-  t0 = max(-b - s, 0.0);
-  t1 = min(-b + s, tmax);
-  return t1 > t0;
-}
-
-// nearest point of the hand along a ray; it materialises in dithered patches
-float traceHand(vec3 ro, vec3 rd, float tmax, out float part) {
-  part = 0.0;
-  float t, t1;
-  if (!handNear(ro, rd, tmax, t, t1)) return tmax;
-  for (int i = 0; i < 72; i++) {
-    if (t > t1) break;
-    vec3 p = ro + rd * t;
-    float pt;
-    float d = handScene(p, pt);
-    if (d < 0.0008 * t + 0.0004) {
-      if (vnoise(p.xz * 9.0 + p.y * 5.0) * 0.8 + 0.1 > uHandOn) return tmax;
-      part = pt;
-      return t;
-    }
-    t += d * 0.9;
-  }
-  return tmax;
-}
-
-vec3 handNormal(vec3 p) {
-  vec2 e = vec2(0.002, 0.0);
-  float q;
-  return normalize(vec3(
-    handScene(p + e.xyy, q) - handScene(p - e.xyy, q),
-    handScene(p + e.yxy, q) - handScene(p - e.yxy, q),
-    handScene(p + e.yyx, q) - handScene(p - e.yyx, q)));
-}
-
-// the hand's shadow on whatever is under it: a soft march through its field
-float handShadow(vec3 p, vec3 l) {
-  if (uHandOn < 0.05) return 1.0;
-  float t0, t1;
-  if (!handNear(p, l, 30.0, t0, t1)) return 1.0;
-  float res = 1.0;
-  float t = max(t0, 0.02);
-  for (int i = 0; i < 28; i++) {
-    if (t > t1) break;
-    float q;
-    float d = handScene(p + l * t, q);
-    res = min(res, 6.0 * d / t);
-    if (res < 0.01) break;
-    t += clamp(d, 0.02, 0.4);
-  }
-  return mix(1.0, clamp(res, 0.0, 1.0), smoothstep(0.05, 0.6, uHandOn));
-}
-
 // ---------------------------------------------------------------- sky
 
 float sunUp() {
@@ -459,7 +320,7 @@ vec3 moonDir() {
 }
 
 float clouds(vec2 xz) {
-  vec2 p = xz * 0.16 + vec2(uTime * 0.012, uTime * 0.004) * (1.0 + uRain * 3.0);
+  vec2 p = xz * 0.16 + vec2(uTime * 0.012, uTime * 0.004) * (1.0 + uRain * 3.0) - uWind.xy * uWind.w * 0.16;
   float c = fbm(p);
   return smoothstep(0.56 - 0.36 * uCloud, 0.8 - 0.25 * uCloud, c);
 }
@@ -556,7 +417,7 @@ float plumeTop(vec4 v) {
 }
 
 vec2 plumeLean(float hgt) {
-  return vec2(0.6, 0.22) * hgt * hgt * 0.24;
+  return vec2(0.6, 0.22) * hgt * hgt * 0.24 + uWind.xy * uWind.z * hgt * 0.6;
 }
 
 float plumeDensity(vec3 p, vec4 v) {
@@ -728,34 +589,15 @@ void main() {
   float dodoM;
   float tDodo = traceDodos(ro, rd, min(min(tLand, tSea), tMax), dodoId, dodoM);
 
-  // --- your hand
-  float handPart;
-  float tHand = traceHand(ro, rd, min(min(min(tLand, tSea), tDodo), tMax), handPart);
-
   vec3 L = lightDir();
   vec3 Lm = modelLight();
   float Li = lightAmount();
   float day = sunUp();
 
-  if (tHand < tMax && handPart > 0.5) {
-    vec3 p = ro + rd * tHand;
-    vec3 n = handNormal(p);
-    float diff = max(dot(n, Lm), 0.0);
-    float rim = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
-    if (handPart > 1.5) {
-      // the cloud it comes out of: the palest thing in the sky
-      mat = M_SMOKE;
-      tone = (0.78 + 0.14 * n.y + 0.12 * diff) * mix(0.8, 1.0, day);
-    } else {
-      mat = M_HAND;
-      float sh = softShadow(p + n * 0.01, Lm);
-      tone = (0.5 + 0.1 * n.y + 0.42 * diff * sh) * Li + rim * 0.14;
-    }
-    tHit = tHand;
-  } else if (dodoId >= 0) {
+  if (dodoId >= 0) {
     vec3 p = ro + rd * tDodo;
     vec3 n = dodoNormal(p, dodoId);
-    float sh = softShadow(p + n * 0.01, Lm) * cloudShadow(p) * handShadow(p + n * 0.01, Lm);
+    float sh = softShadow(p + n * 0.01, Lm) * cloudShadow(p);
     float diff = max(dot(n, Lm), 0.0);
     // a pale bird in good light, with a rim so it lifts off the ground behind
     float rim = pow(1.0 - max(dot(n, -rd), 0.0), 3.0);
@@ -776,8 +618,7 @@ void main() {
     vec3 p = ro + rd * tLand;
     vec4 here = land(p.xz);
     vec3 n = terrainNormal(p.xz, tLand);
-    float hsh = handShadow(p + n * 0.004, Lm);
-    float sh = softShadow(p + n * 0.004, Lm) * cloudShadow(p) * hsh;
+    float sh = softShadow(p + n * 0.004, Lm) * cloudShadow(p);
     float diff = max(dot(n, Lm), 0.0);
     float slope = 1.0 - n.y;
     float heat = here.b;
@@ -824,7 +665,7 @@ void main() {
     // valleys sink and ridges lift, like a relief map
     float cav = cavity(p.xz);
     float ao = mix(0.62, 1.0, smoothstep(-0.2, 0.7, n.y)) * clamp(1.0 + cav * 6.0, 0.62, 1.15);
-    float fill = (0.4 + 0.12 * n.y) * ao * fillK * mix(0.72, 1.0, hsh);
+    float fill = (0.4 + 0.12 * n.y) * ao * fillK;
     tone = alb * (fill + 0.62 * diff * sh) * Li;
 
     // rivers and lakes: water laid across the land, with a dark lip where it cuts in
@@ -871,19 +712,8 @@ void main() {
     float wa = vnoise(w1);
     vec2 chop = vec2(vnoise(w1 + vec2(0.15, 0.0)) - wa, vnoise(w1 + vec2(0.0, 0.15)) - wa) / 0.15;
     slope += chop * 0.025 * near;
-    // rings spreading from where a fingertip touched the water
-    float ringCrest = 0.0;
-    for (int i = 0; i < 8; i++) {
-      vec4 rp = uRipple[i];
-      if (rp.w <= 0.0) continue;
-      vec2 dv = p.xz - rp.xy;
-      float d = length(dv);
-      float radius = 0.06 + rp.z * 0.42;
-      float env = exp(-rp.z * 1.4) * smoothstep(0.22, 0.0, abs(d - radius)) * rp.w;
-      float ph = (d - radius) * 38.0;
-      slope += (dv / max(d, 1e-3)) * cos(ph) * env * 0.16;
-      ringCrest = max(ringCrest, env * smoothstep(0.55, 1.0, sin(ph)));
-    }
+    // a wind roughens the sea: more chop, and it runs with the wind
+    slope += chop * 0.05 * uWind.z * near;
     float calm = mix(0.3, 1.0, smoothstep(0.02, 0.4, wdepth));
     vec3 n = normalize(vec3(-slope.x * calm, 1.0, -slope.y * calm));
     vec3 r = reflect(rd, n);
@@ -891,8 +721,7 @@ void main() {
     float refl = skyTone(normalize(vec3(r.x, max(r.y, 0.02), r.z)));
     // the lagoon: shallow water is light over the sand, deep water sits in the middle
     float shallow = exp(-wdepth * 6.5);
-    float hsh = handShadow(p, Lm);
-    float body = mix(0.36, 0.72, shallow) * Li * mix(0.8, 1.0, day) * cloudShadow(p) * mix(0.62, 1.0, hsh);
+    float body = mix(0.36, 0.72, shallow) * Li * mix(0.8, 1.0, day) * cloudShadow(p);
     // the sea stays a step darker than the sky it reflects, so the horizon holds
     tone = mix(body, refl * 0.8, fres * 0.85);
     // the swells' crests, a shade lighter: long, slow lines across the water
@@ -913,11 +742,12 @@ void main() {
     // the sea boils over new land coming up beneath it
     float boil = land(p.xz).b * smoothstep(0.3, 0.0, wdepth);
     foam = max(foam, boil * smoothstep(0.35, 0.7, vnoise(p.xz * 30.0 + vec2(0.0, uTime * 3.0))));
-    foam = max(foam, ringCrest * 0.75);
+    // in a wind, whitecaps break on the swells
+    float caps = uWind.z * smoothstep(0.74, 0.92, vnoise(p.xz * 15.0 - uWind.xy * uWind.w * 8.0 + uTime * 0.5)) * smoothstep(0.5, 0.95, s1 * 0.6 + s2 * 0.4 + 0.3);
+    foam = max(foam, caps * 0.65 * smoothstep(0.1, 0.4, wdepth));
     tone = mix(tone, 1.0, foam);
-    // at night the surf glows: bioluminescence, in the only colour we have — and so
-    // do the rings a fingertip leaves
-    accent = max(smoothstep(0.35, 0.7, foam), smoothstep(0.2, 0.6, ringCrest)) * (1.0 - day);
+    // at night the surf glows: bioluminescence, in the only colour we have
+    accent = smoothstep(0.35, 0.7, foam) * (1.0 - day);
     tone = mix(tone, skyTone(normalize(vec3(rd.x, 0.02, rd.z))), smoothstep(16.0, 45.0, tSea));
     tHit = tSea;
     mat = M_WATER;
@@ -958,24 +788,44 @@ void main() {
     accent = max(accent, ring * press);
   }
 
-  // rain: slanted streaks, a few print-dots long, falling at different speeds —
-  // everywhere in a storm, or only in a column under a hand that's wiggling its fingers
-  float shower = 0.0;
-  if (uShower.w > 0.01) {
-    float dx = abs(frag.x + (frag.y - uShower.y) * 0.22 - uShower.x);
-    shower = uShower.w * smoothstep(uShower.z, uShower.z * 0.45, dx) * step(frag.y, uShower.y) * smoothstep(uShowerFloor - 4.0, uShowerFloor + 6.0, frag.y);
-  }
-  float rainHere = max(uRain, shower);
-  if (rainHere > 0.01) {
-    vec2 q = frag + vec2(frag.y * 0.22, 0.0);
+  // rain: slanted streaks, a few print-dots long, falling at different speeds;
+  // a wind leans them over
+  if (uRain > 0.01) {
+    float lean = 0.22 + uWindHead.z * uWind.z * 0.6;
+    vec2 q = frag + vec2(frag.y * lean, 0.0);
     float col = floor(q.x / 2.0);
     float r = hash12(vec2(col, 3.7));
     float y = fract(frag.y / uRes.y * (1.6 + r) + uTime * (1.1 + r * 0.8) + r * 7.0);
-    float streak = step(1.0 - rainHere * 0.5, hash12(vec2(col, floor(frag.y / uRes.y * (1.6 + r) + uTime * (1.1 + r * 0.8) + r * 7.0))));
+    float streak = step(1.0 - uRain * 0.5, hash12(vec2(col, floor(frag.y / uRes.y * (1.6 + r) + uTime * (1.1 + r * 0.8) + r * 7.0))));
     streak *= smoothstep(0.0, 0.02, y) * (1.0 - smoothstep(0.02, 0.12, y));
     tone = mix(tone, tone * 0.5 + 0.48, streak * 0.85);
     tone *= 1.0 - 0.08 * uRain;
   }
+
+  // the wind, drawn as the old charts draw it: fine lines of breath streaming
+  // from the face that blows it, across sky and sea
+  if (uWind.z > 0.02) {
+    vec2 dir = uWindHead.zw;
+    vec2 rel = frag - uWindHead.xy;
+    float along = dot(rel, dir);
+    float across = dot(rel, vec2(-dir.y, dir.x));
+    // the breath fans out as it goes
+    float spread = 10.0 + along * 0.35;
+    if (along > 4.0 && abs(across) < spread) {
+      float lane = across / spread * 7.0;
+      float row = floor(lane);
+      float h = hash12(vec2(row, 9.1));
+      float inLane = smoothstep(0.9, 0.3, abs(fract(lane) - 0.5) * (spread / 7.0));
+      float dash = smoothstep(0.55, 0.62, fract(along / (40.0 + 30.0 * h) - uTime * (1.1 + h) + h * 5.0));
+      float fade = (1.0 - smoothstep(uRes.x * 0.25, uRes.x * 0.85, along)) * smoothstep(4.0, 14.0, along);
+      float line = inLane * dash * fade * step(0.25, h) * uWind.z;
+      if (line > 0.5) {
+        tone = (mat == M_SKY || mat == M_SMOKE) && day > 0.35 ? 0.0 : 1.0;
+        mat = M_INK;
+      }
+    }
+  }
+
   // the opening: a veil of cloud the camera falls through
   if (uIntro < 1.0) {
     float veil = smoothstep(0.75, 0.15, uIntro);

@@ -404,7 +404,7 @@ button {
 }
 
 .rain,
-.handbtn {
+.facebtn {
   display: inline-flex;
   align-items: center;
   gap: 8px;
@@ -423,7 +423,7 @@ button {
 }
 
 .rain:hover,
-.handbtn:hover {
+.facebtn:hover {
   background: rgba(10, 10, 9, 0.8);
 }
 
@@ -432,12 +432,12 @@ button {
   color: #0a0a09;
 }
 
-.handbtn.is-on {
+.facebtn.is-on {
   background: rgba(239, 232, 214, 0.92);
   color: #0a0a09;
 }
 
-.handbtn:disabled {
+.facebtn:disabled {
   cursor: progress;
   opacity: 0.7;
 }
@@ -465,8 +465,72 @@ button {
   height: 156px;
   background: var(--ink);
   outline: 1px solid var(--hair);
-  /* a mirror, so your right hand is on the right */
+  /* a mirror, so your left is on the left */
   transform: scaleX(-1);
+}
+
+/* blowing: the mirror flies up into a corner of the sky and becomes the
+   wind head, the puffed face that blows the winds on old sea charts */
+.mirror.is-wind {
+  right: auto;
+  bottom: auto;
+  top: calc(var(--wy) - 84px);
+  left: calc(var(--wx) - 84px);
+  width: 168px;
+}
+
+.mirror.is-wind.right {
+  left: calc(100vw - var(--wx) - 84px);
+}
+
+.mirror.is-wind .mirror-print {
+  width: 168px;
+  height: 168px;
+  border-radius: 50%;
+  overflow: hidden;
+  outline: 0;
+  box-shadow: 0 0 0 3px rgba(242, 236, 220, 0.9), 0 0 0 4px rgba(20, 22, 26, 0.9);
+}
+
+.mirror.is-wind figcaption,
+.mirror.is-wind .legend {
+  display: none;
+}
+
+/* the wind head takes its corner of the sky; the log steps aside */
+.wind-left .log {
+  opacity: 0;
+  transition: opacity 300ms var(--ease);
+}
+
+/* what your face does: each expression lights up as the camera sees it */
+.legend {
+  clear: both;
+  margin: 0;
+  padding: 6px 8px 5px;
+  list-style: none;
+  background: var(--ink);
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.legend li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 1px 0;
+  color: var(--fg-2);
+  transition: color 200ms;
+}
+
+.legend .does {
+  color: var(--fg-3);
+}
+
+.legend li.is-on,
+.legend li.is-on .does {
+  color: var(--lime);
 }
 
 .mirror figcaption {
@@ -564,7 +628,7 @@ button {
     justify-content: stretch;
   }
   .rain,
-  .handbtn {
+  .facebtn {
     flex: 1;
     justify-content: center;
   }
@@ -577,6 +641,9 @@ button {
   .mirror-print {
     width: 120px;
     height: 90px;
+  }
+  .legend {
+    display: none;
   }
   .group {
     justify-content: space-between;

@@ -1,6 +1,7 @@
 // The mirror: the webcam, printed live through Paper Shaders' HalftoneDots
 // shader, in the island's own key and paper. It's how you see what the camera
-// sees (and that it sees your hand), without a photo of you on the screen.
+// sees, without a photo of you on the screen; and when you blow, it flies up
+// into the sky as the wind head.
 //
 // Paper's ShaderMount takes images, not video, so it starts from a blank image
 // of the right shape and then each new camera frame is uploaded into that same

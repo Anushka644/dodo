@@ -4,8 +4,7 @@ import { Flock, MAX_DODOS } from './dodos';
 import { Birds } from './birds';
 import { PALETTES, skyPalette, stormy, type Palette } from './palettes';
 import { islandSound } from './sound';
-import { WorldHand, syntheticPose, type ViewCam } from './hand/hand';
-import { HandTracker, openCamera, closeCamera, type HandPose } from './hand/tracker';
+import { FaceTracker, openCamera, closeCamera, type FaceRead } from './face/tracker';
 import { sound } from '../sound';
 
 type V3 = [number, number, number];
@@ -26,6 +25,17 @@ const rotate = (v: V3, k: V3, a: number): V3 => {
 // forest that has to grow before the next dodo hatches (square world units)
 const HATCH_AT = [0.25, 0.7, 1.3, 2.1, 3.1, 4.3, 5.7, 7.3, 9.1, 11.1, 13.3];
 
+export interface Expressions {
+  smile: boolean;
+  frown: boolean;
+  closed: boolean;
+  blow: boolean;
+  roar: boolean;
+}
+
+/** where the wind head sits on the screen, as a fraction of its width and height (the App puts it there too) */
+export const WIND_HEAD = { x: 0.11, y: 0.22 };
+
 /** things worth writing down in the log, once each */
 export type Milestone =
   | 'land'
@@ -40,15 +50,20 @@ export type Milestone =
   | 'lake'
   | 'half'
   | 'safe'
-  | 'hand'
-  | 'carried'
-  | 'shower';
+  | 'face'
+  | 'sunshine'
+  | 'storm'
+  | 'sleep'
+  | 'wind'
+  | 'roar';
 
 export interface IslandHud {
-  /** the hand: off, starting up, waiting to see a hand, or in the world */
-  hand: 'off' | 'starting' | 'looking' | 'here';
-  /** how many dodos are riding it */
-  riders: number;
+  /** the face: off, starting up, waiting to see one, or watching it */
+  face: 'off' | 'starting' | 'looking' | 'here';
+  /** which expressions are showing right now */
+  expr: Expressions;
+  /** which corner of the sky the wind head blows from */
+  windSide: 'left' | 'right';
   day: number;
   dodos: number;
   land: number;
@@ -104,23 +119,30 @@ export class IslandEngine {
   /** smoke and steam over new land: x, base y, z, strength (four at most) */
   private vents: { x: number; y: number; z: number; s: number; live: boolean }[] = [];
   private glow = 0;
-  // the hand: your own, through the webcam
-  readonly hand = new WorldHand();
-  private tracker: HandTracker | null = null;
+  // the face: yours, through the webcam, as the island's weather
+  private tracker: FaceTracker | null = null;
   private video: HTMLVideoElement | null = null;
-  private handState: IslandHud['hand'] = 'off';
-  private handGen = 0;
+  private faceState: IslandHud['face'] = 'off';
+  private faceGen = 0;
   /** the camera went away by itself */
-  onHandLost?: () => void;
-  /** a pose to use instead of the camera (tests, and the dev console) */
-  debugPose: HandPose | null = null;
-  private handJ = new Float32Array(84);
-  private handB = new Float32Array(4);
-  /** rings in the sea where fingertips touch it: x, z, age, strength */
-  private ripples: { x: number; z: number; age: number; s: number }[] = [];
-  private tipWet = Array(7).fill(false) as boolean[];
-  private tipLast: [number, number][] = Array.from({ length: 7 }, () => [0, 0] as [number, number]);
-  private shower = 0;
+  onFaceLost?: () => void;
+  /** a reading to use instead of the camera (tests, and the dev console) */
+  debugFace: FaceRead | null = null;
+  private expr: Expressions = { smile: false, frown: false, closed: false, blow: false, roar: false };
+  private closedFor = 0;
+  private roarFor = 0;
+  private roarAt: [number, number] | null = null;
+  private faceRain = false;
+  /** 0..1 while you smile: the clouds part */
+  private sunny = 0;
+  /** the wind over the island: direction (x, z), strength, how far it has blown */
+  private wind = { x: 1, z: 0, s: 0, phase: 0 };
+  private windSide: 'left' | 'right' = 'left';
+  /** the view, turned by your head as if the island sat behind the glass */
+  private look = { yaw: 0, pitch: 0, zoom: 1 };
+  private faceSizes: number[] = [];
+  private faceNeutral = 0;
+
   // weather
   private rainHeld = false;
   rain = 0;
@@ -162,13 +184,13 @@ export class IslandEngine {
 
   run() {
     this.layout();
-    if (import.meta.env.DEV) Object.assign(window, { island: this, syntheticPose });
+    if (import.meta.env.DEV) Object.assign(window, { island: this });
     this.loop();
   }
 
   dispose() {
     cancelAnimationFrame(this.raf);
-    this.disableHand();
+    this.disableFace();
   }
 
   layout() {
@@ -208,8 +230,12 @@ export class IslandEngine {
     this.pitch += (this.goal.pitch - this.pitch) * k;
     this.dist += (this.goal.dist - this.dist) * k;
     for (let i = 0; i < 3; i++) this.target[i] += (this.goal.target[i] - this.target[i]) * k * 0.7;
-    const cp = Math.cos(this.pitch);
-    const off: V3 = [Math.sin(this.yaw) * cp * this.dist, Math.sin(this.pitch) * this.dist, Math.cos(this.yaw) * cp * this.dist];
+    // your head turns the view a little, as if the island sat behind the glass
+    const yaw = this.yaw + this.look.yaw;
+    const pitch = clamp(this.pitch + this.look.pitch, 0.04, 1.4);
+    const dist = this.dist * this.look.zoom;
+    const cp = Math.cos(pitch);
+    const off: V3 = [Math.sin(yaw) * cp * dist, Math.sin(pitch) * dist, Math.cos(yaw) * cp * dist];
     const pos: V3 = [this.target[0] + off[0], this.target[1] + off[1], this.target[2] + off[2]];
     // never below the waves
     pos[1] = Math.max(pos[1], this.terrain.surface(pos[0], pos[2]) + 0.12);
@@ -333,33 +359,35 @@ export class IslandEngine {
     this.rainHeld = on;
   }
 
-  /** lend a hand: open the camera and load hand tracking, side by side. Returns the video (for the mirror). */
-  async enableHand(onStatus?: (s: string) => void): Promise<HTMLVideoElement> {
+  /** lend your face: open the camera and load face tracking, side by side. Returns the video (for the mirror). */
+  async enableFace(onStatus?: (s: string) => void): Promise<HTMLVideoElement> {
     if (this.video) return this.video;
-    const gen = ++this.handGen;
-    this.handState = 'starting';
+    const gen = ++this.faceGen;
+    this.faceState = 'starting';
     onStatus?.('Opening the camera…');
-    const [cam, trk] = await Promise.allSettled([openCamera(), HandTracker.create(onStatus)]);
-    const cancelled = gen !== this.handGen;
+    const [cam, trk] = await Promise.allSettled([openCamera(), FaceTracker.create(onStatus)]);
+    const cancelled = gen !== this.faceGen;
     if (cancelled || cam.status === 'rejected' || trk.status === 'rejected') {
       if (cam.status === 'fulfilled') closeCamera(cam.value);
       if (trk.status === 'fulfilled') trk.value.dispose();
-      if (!cancelled) this.handState = 'off';
+      if (!cancelled) this.faceState = 'off';
       throw cancelled ? new DOMException('Cancelled', 'AbortError') : cam.status === 'rejected' ? cam.reason : (trk as PromiseRejectedResult).reason;
     }
     const video = cam.value;
     trk.value.attach(video);
     this.video = video;
     this.tracker = trk.value;
-    this.handState = 'looking';
-    // a camera that goes away (unplugged, revoked, taken by another app) takes the hand with it
+    this.faceState = 'looking';
+    this.faceSizes = [];
+    this.faceNeutral = 0;
+    // a camera that goes away (unplugged, revoked, taken by another app) takes the face with it
     const track = (video.srcObject as MediaStream | null)?.getVideoTracks()[0];
     track?.addEventListener(
       'ended',
       () => {
         if (this.video !== video) return;
-        this.disableHand();
-        this.onHandLost?.();
+        this.disableFace();
+        this.onFaceLost?.();
       },
       { once: true },
     );
@@ -368,18 +396,18 @@ export class IslandEngine {
     return video;
   }
 
-  /** take the hand back (also cancels one that's still starting) */
-  disableHand() {
-    this.handGen++;
+  /** give the face back (also cancels one that's still starting) */
+  disableFace() {
+    this.faceGen++;
     this.tracker?.dispose();
     this.tracker = null;
     closeCamera(this.video);
     this.video = null;
-    this.handState = 'off';
+    this.faceState = 'off';
   }
 
-  get handActive() {
-    return this.handState !== 'off' || !!this.debugPose;
+  get faceActive() {
+    return this.faceState !== 'off' || !!this.debugFace;
   }
 
   setSunHour(hour: number) {
@@ -442,20 +470,32 @@ export class IslandEngine {
     this.brush.on += ((hit ? 1 : 0) - this.brush.on) * Math.min(1, dt * 10);
     const want = sculpting ? (this.drag && this.drag.kind === 'sculpt' && this.drag.carve ? -1 : 1) : 0;
     this.brush.strength += (want - this.brush.strength) * Math.min(1, dt * 12);
-    const raising = sculpting && !!hit && this.drag?.kind === 'sculpt' && !this.drag.carve;
+    this.stepFace(dt, now);
+    const roaring = !!this.roarAt;
+    const raising = (sculpting && !!hit && this.drag?.kind === 'sculpt' && !this.drag.carve) || roaring;
+    // a roar: the mountain answers, pushing up new rock where it stands
+    if (this.roarAt) {
+      const [rx, rz] = this.roarAt;
+      const j = 0.25;
+      this.terrain.raise(rx + (Math.random() - 0.5) * j, rz + (Math.random() - 0.5) * j, 0.5, 0.75, dt);
+      this.terrain.relax(rx, rz, 0.6, 0.04);
+    }
     if (sculpting && hit && this.drag?.kind === 'sculpt') {
       const rate = this.drag.carve ? -0.9 : 0.75;
       this.terrain.raise(this.brush.x, this.brush.z, this.brush.r, rate, dt);
       this.terrain.relax(this.brush.x, this.brush.z, this.brush.r * 1.2, 0.04);
       this.idle = 0;
     }
-    islandSound.rumble(sculpting && hit ? (this.drag?.kind === 'sculpt' && this.drag.carve ? -1 : 1) : 0);
-    this.stepVents(dt, raising);
+    islandSound.rumble(roaring ? 1 : sculpting && hit ? (this.drag?.kind === 'sculpt' && this.drag.carve ? -1 : 1) : 0);
+    this.stepVents(dt, raising, this.roarAt);
     this.milestones(raising);
 
     // weather: rain gathers quickly and clears slowly; storms throw lightning
-    this.rain += ((this.rainHeld ? 1 : 0) - this.rain) * Math.min(1, dt * (this.rainHeld ? 2.2 : 0.5));
-    this.cloud += (0.25 + 0.75 * Math.max(this.rain, this.rainHeld ? 1 : 0) - this.cloud) * Math.min(1, dt * 1.2);
+    const wet = this.rainHeld || this.faceRain;
+    this.rain += ((wet ? 1 : 0) - this.rain) * Math.min(1, dt * (wet ? 2.2 : 0.5));
+    // a smile parts the clouds
+    this.sunny += ((this.expr.smile ? 1 : 0) - this.sunny) * Math.min(1, dt * 1.5);
+    this.cloud += (0.25 * (1 - 0.85 * this.sunny) + 0.75 * Math.max(this.rain, wet ? 1 : 0) - this.cloud) * Math.min(1, dt * 1.2);
     this.flash = Math.max(0, this.flash - dt * 5);
     if (this.rain > 0.6) {
       this.nextFlash -= dt;
@@ -465,7 +505,8 @@ export class IslandEngine {
         islandSound.thunder(0.3 + Math.random() * 1.1);
       }
     }
-    islandSound.rain(Math.max(this.rain, this.shower * 0.7));
+    islandSound.rain(this.rain);
+    islandSound.wind(this.wind.s);
 
     // the forest grows where it rains
     this.growTimer -= dt;
@@ -511,16 +552,7 @@ export class IslandEngine {
         this.onHatch?.(this.flock.count);
       }
     }
-    this.stepHand(dt, now);
-    const ev = this.flock.step(dt, this.hand.visible ? this.hand : null);
-    if (ev.startled > 0) islandSound.honk(1.15 + Math.random() * 0.2);
-    if (ev.boarded > 0) {
-      islandSound.honk(1.3);
-      this.mark('carried');
-    }
-    if (ev.dropped > 0) islandSound.honk(1.45);
-    if (ev.landed > 0) islandSound.honk(0.8);
-    if (ev.splashed > 0) islandSound.splash();
+    if (this.flock.step(dt) > 0) islandSound.honk(1.15 + Math.random() * 0.2);
 
     // seabirds come to nest once there's forest, one for every patch of it
     const day = Math.min(1, Math.max(0, (this.sun[1] + 0.1) / 0.3));
@@ -561,17 +593,18 @@ export class IslandEngine {
   }
 
   /** a plume rises where you push land up; it drifts and thins after you let go */
-  private stepVents(dt: number, raising: boolean) {
+  private stepVents(dt: number, raising: boolean, at: [number, number] | null = null) {
     let live = this.vents.find((v) => v.live);
     if (raising) {
-      if (!live || Math.hypot(live.x - this.brush.x, live.z - this.brush.z) > this.brush.r * 1.6) {
+      const [bx, bz] = at ?? [this.brush.x, this.brush.z];
+      if (!live || Math.hypot(live.x - bx, live.z - bz) > this.brush.r * 1.6) {
         if (live) live.live = false;
-        live = { x: this.brush.x, y: 0, z: this.brush.z, s: 0, live: true };
+        live = { x: bx, y: 0, z: bz, s: 0, live: true };
         this.addVent(live);
       }
       const k = 1 - Math.exp(-dt * 5);
-      live.x += (this.brush.x - live.x) * k;
-      live.z += (this.brush.z - live.z) * k;
+      live.x += (bx - live.x) * k;
+      live.z += (bz - live.z) * k;
       live.s = Math.min(1, live.s + dt * 0.9);
     } else if (live) {
       live.live = false;
@@ -608,73 +641,124 @@ export class IslandEngine {
     return out;
   }
 
-  /** the camera's hand into the world, and what it does there */
-  private stepHand(dt: number, now: number) {
-    const pose = this.debugPose ?? this.tracker?.detect(now) ?? null;
-    if (!pose && !this.hand.visible) {
-      this.terrain.shower = null;
-      this.shower = 0;
-      this.ripples = this.ripples.filter((r) => (r.age += dt) < 3);
-      return;
-    }
-    const view: ViewCam = { ...this.cam, tanFov: this.tanFov, aspect: window.innerWidth / window.innerHeight, dist: this.dist };
-    const wasHere = this.hand.present > 0.5;
-    this.hand.update(dt, pose, view, (x, z) => this.terrain.surface(x, z));
-    if (pose) {
-      this.idle = 0;
-      if (this.tracker) this.handState = 'here';
-    } else if (this.tracker) this.handState = 'looking';
-    if (!wasHere && this.hand.present > 0.5) islandSound.whoosh();
-    if (this.hand.present > 0.9) this.mark('hand');
+  /** your face, read as weather: smile, frown, close your eyes, blow, roar; and your head turns the view */
+  private stepFace(dt: number, now: number) {
+    const f = this.debugFace ?? this.tracker?.detect(now) ?? null;
+    if (this.tracker) this.faceState = f ? 'here' : 'looking';
+    const e = this.expr;
+    const k = 1 - Math.exp(-dt * 3);
+    if (!f) {
+      e.smile = e.frown = e.closed = e.blow = e.roar = false;
+      this.closedFor = this.roarFor = 0;
+      this.faceRain = false;
+      this.roarAt = null;
+      this.look.yaw += -this.look.yaw * k;
+      this.look.pitch += -this.look.pitch * k;
+      this.look.zoom += (1 - this.look.zoom) * k;
+    } else {
+      if (this.intro >= 1) this.mark('face');
+      const was = { ...e };
+      // the wind head appears on the side of the sky your face is on (and stays while you blow)
+      if (!e.blow) this.windSide = f.head.x < 0 ? 'left' : 'right';
+      // a little hysteresis, so an expression doesn't flicker on and off at the threshold
+      e.smile = e.smile ? f.smile > 0.32 : f.smile > 0.5;
+      e.frown = !e.smile && (e.frown ? f.frown > 0.25 : f.frown > 0.42);
+      e.blow = e.blow ? f.blow > 0.28 : f.blow > 0.42;
+      // a blink is not a sleep
+      this.closedFor = f.closed > 0.55 ? this.closedFor + dt : 0;
+      e.closed = this.closedFor > 0.35;
+      this.roarFor = f.roar > 0.55 && !e.smile ? this.roarFor + dt : 0;
+      e.roar = this.roarFor > 0.45;
 
-    // a hand in the sea: rings spread from wherever it touches, and it drags a wake
-    this.hand.touches().forEach(({ p: tip, r }, i) => {
-      const floor = this.terrain.sample(tip[0], tip[2]);
-      const wet = this.hand.present > 0.6 && tip[1] - r < SEA + 0.01 && floor < SEA - 0.01;
-      const [lx, lz] = this.tipLast[i];
-      const moved = Math.hypot(tip[0] - lx, tip[2] - lz);
-      if (wet && (!this.tipWet[i] || moved > 0.14)) {
-        const s = this.tipWet[i] ? 0.6 : 1;
-        this.ripples.push({ x: tip[0], z: tip[2], age: 0, s });
-        if (this.ripples.length > 8) this.ripples.shift();
-        this.tipLast[i] = [tip[0], tip[2]];
-        if (!this.tipWet[i]) islandSound.plink(0.8 + (i % 5) * 0.12);
+      // a smile: the clouds part, and at night the sun comes up for you
+      if (e.smile && !was.smile) {
+        if (this.sun[1] < 0.08) this.setSunHour(7.6);
+        this.flock.startle(0.5);
+        islandSound.honk(1.25);
+        if (this.birds.count > 0) islandSound.cry(this.dist);
+        this.mark('sunshine');
       }
-      this.tipWet[i] = wet;
-    });
-    this.ripples = this.ripples.filter((r) => (r.age += dt) < 3);
+      // a frown: the sky darkens and it pours
+      if (e.frown && !was.frown) {
+        this.flock.startle(0.8);
+        this.mark('storm');
+      }
+      this.faceRain = e.frown;
+      // eyes closed a moment: night falls (you open them to the stars)
+      if (e.closed && !was.closed) {
+        this.setSunHour(23.3);
+        this.mark('sleep');
+      }
+      if (e.blow && !was.blow) {
+        islandSound.whoosh();
+        this.mark('wind');
+      }
+      if (e.roar && !was.roar) {
+        this.roarAt = this.roarSpot();
+        this.flock.startle(1);
+        this.mark('roar');
+      }
+      if (!e.roar) this.roarAt = null;
 
-    // wiggling fingers rain on whatever is under the hand
-    const want = this.hand.present > 0.8 ? Math.max(0, (this.hand.wiggle - 0.2) / 0.8) : 0;
-    this.shower += (want - this.shower) * Math.min(1, dt * (want > this.shower ? 4 : 1.2));
-    const p = this.hand.palm.c;
-    this.terrain.shower = this.shower > 0.05 ? { x: p[0], z: p[2], r: 0.85 * (this.hand.scale / 7), a: this.shower } : null;
-    if (this.shower > 0.4) this.mark('shower');
+      // your head: the island sits behind the glass. Where your face first settles is
+      // the middle; lean in to look closer
+      if (this.faceNeutral === 0 && Number.isFinite(f.head.size)) {
+        this.faceSizes.push(f.head.size);
+        if (this.faceSizes.length >= 30) this.faceNeutral = [...this.faceSizes].sort((a, b) => a - b)[15];
+      }
+      const lean = this.faceNeutral ? clamp(Math.log(f.head.size / this.faceNeutral), -0.5, 0.5) : 0;
+      this.look.yaw += (clamp(f.head.x, -1, 1) * 0.42 - this.look.yaw) * k;
+      this.look.pitch += (clamp(f.head.y, -1, 1) * 0.16 - this.look.pitch) * k;
+      this.look.zoom += (Math.exp(-lean * 0.9) - this.look.zoom) * k;
+    }
+    // the wind blows while you blow, then dies away
+    const want = e.blow && f ? clamp(f.blow * 1.5, 0.45, 1) : 0;
+    this.wind.s += (want - this.wind.s) * Math.min(1, dt * (want > this.wind.s ? 3 : 0.7));
+    // from the wind head's corner, across the island
+    const right = norm([this.cam.right[0], 0, this.cam.right[2]]);
+    const away = norm([this.cam.fwd[0], 0, this.cam.fwd[2]]);
+    const side = this.windSide === 'left' ? 1 : -1;
+    const dir = norm([right[0] * side * 0.85 + away[0] * 0.5, 0, right[2] * side * 0.85 + away[2] * 0.5]);
+    this.wind.x = dir[0];
+    this.wind.z = dir[2];
+    this.wind.phase += this.wind.s * dt * 0.8;
   }
 
-  /** where the hand's shower falls on the print: texel x, y of the hand, a half-width, how hard; and the texel y of the ground under it */
-  private showerUniform(): { top: number[]; floor: number } {
-    if (this.shower < 0.02) return { top: [0, 0, 0, 0], floor: 0 };
+  /** where a roar breaks out: the island's highest ground near its middle, or the middle of the sea */
+  private roarSpot(): [number, number] {
+    const [cx, cz] = this.nest;
+    let best: [number, number] = [cx, cz];
+    let top = -Infinity;
+    for (let i = 0; i < 40; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.random() * 1.2;
+      const x = cx + Math.cos(a) * r, z = cz + Math.sin(a) * r;
+      const h = this.terrain.sample(x, z) - r * 0.15;
+      if (h > top) {
+        top = h;
+        best = [x, z];
+      }
+    }
+    return best;
+  }
+
+  /** the wind for the shader: over the world, and where on the print its head blows from */
+  private windUniforms() {
     const [w, h] = this.renderer.worldSize;
+    const hx = (this.windSide === 'left' ? WIND_HEAD.x : 1 - WIND_HEAD.x) * w;
+    const hy = (1 - WIND_HEAD.y) * h;
+    // it blows towards the island, as it appears on the print
+    const n = this.nest;
+    const d: V3 = [n[0] - this.cam.pos[0], 0.3 - this.cam.pos[1], n[1] - this.cam.pos[2]];
+    const z = Math.max(0.2, d[0] * this.cam.fwd[0] + d[1] * this.cam.fwd[1] + d[2] * this.cam.fwd[2]);
     const aspect = w / h;
-    const project = (q: V3) => {
-      const d: V3 = [q[0] - this.cam.pos[0], q[1] - this.cam.pos[1], q[2] - this.cam.pos[2]];
-      const z = Math.max(0.2, d[0] * this.cam.fwd[0] + d[1] * this.cam.fwd[1] + d[2] * this.cam.fwd[2]);
-      const nx = (d[0] * this.cam.right[0] + d[1] * this.cam.right[1] + d[2] * this.cam.right[2]) / (z * this.tanFov * aspect);
-      const ny = (d[0] * this.cam.up[0] + d[1] * this.cam.up[1] + d[2] * this.cam.up[2]) / (z * this.tanFov);
-      return { x: (nx * 0.5 + 0.5) * w, y: (ny * 0.5 + 0.5) * h, z };
-    };
-    const p = this.hand.palm.c;
-    const top = project(p);
-    const floor = project([p[0], this.terrain.surface(p[0], p[2]), p[2]]);
-    const r = ((0.55 * this.hand.scale) / 7 / (top.z * this.tanFov * 2)) * h;
-    return { top: [top.x, top.y, r, this.shower], floor: floor.y };
-  }
-
-  private rippleUniform() {
-    const out = new Float32Array(32);
-    this.ripples.forEach((r, i) => out.set([r.x, r.z, r.age, r.s], i * 4));
-    return out;
+    const ix = ((d[0] * this.cam.right[0] + d[1] * this.cam.right[1] + d[2] * this.cam.right[2]) / (z * this.tanFov * aspect) * 0.5 + 0.5) * w;
+    const iy = ((d[0] * this.cam.up[0] + d[1] * this.cam.up[1] + d[2] * this.cam.up[2]) / (z * this.tanFov) * 0.5 + 0.5) * h;
+    let dx = ix - hx, dy = iy - hy;
+    const l = Math.hypot(dx, dy) || 1;
+    dx /= l;
+    dy /= l;
+    return { uWind: [this.wind.x, this.wind.z, this.wind.s, this.wind.phase], uWindHead: [hx, hy, dx, dy] };
   }
 
   private currentPalette(): Palette {
@@ -705,7 +789,7 @@ export class IslandEngine {
         uIntro: this.intro,
         uVent: this.ventUniform(),
         uBird: this.birdData,
-        ...this.handUniforms(),
+        ...this.windUniforms(),
       },
       {
         uPx: this.canvas.width / this.renderer.worldSize[0],
@@ -726,19 +810,6 @@ export class IslandEngine {
     return ((h % 24) + 24) % 24;
   }
 
-  private handUniforms() {
-    this.hand.uniforms({ joints: this.handJ, bound: this.handB }, this.cam.pos);
-    const sh = this.showerUniform();
-    return {
-      uHandJ: this.handJ,
-      uHandB: this.handB,
-      uHandOn: this.hand.present,
-      uRipple: this.rippleUniform(),
-      uShower: sh.top,
-      uShowerFloor: sh.floor,
-    };
-  }
-
   /** "06:40" from where the sun is */
   hour(): string {
     const h = this.hours();
@@ -752,8 +823,9 @@ export class IslandEngine {
     this.hudAt = now;
     const d = this.drag;
     this.onHud?.({
-      hand: this.debugPose ? 'here' : this.handState,
-      riders: this.flock.dodos.filter((d) => d.ride).length,
+      face: this.debugFace ? 'here' : this.faceState,
+      expr: { ...this.expr },
+      windSide: this.windSide,
       day: this.day,
       dodos: this.flock.count,
       land: this.terrain.landArea,
