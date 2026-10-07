@@ -158,7 +158,7 @@ export class Terrain {
     return a + (b - a) * tx + (c - a) * tz + (a - b - c + d) * tx * tz;
   }
 
-  /** dodos trample the undergrowth where they stand, so they stay in sight */
+  /** dodos trample the undergrowth where they stand, so they stay in sight above it */
   trample(x: number, z: number, radius: number, amount: number) {
     const ci = Math.round((x + WORLD / 2) / CELL - 0.5);
     const cj = Math.round((z + WORLD / 2) / CELL - 0.5);
@@ -167,7 +167,9 @@ export class Terrain {
       for (let i = Math.max(0, ci - rc); i <= Math.min(N - 1, ci + rc); i++) {
         const [wx, wz] = this.toWorld(i, j);
         const d = Math.hypot(wx - x, wz - z) / radius;
-        if (d < 1) this.veg[j * N + i] *= 1 - amount * (1 - d * d);
+        // down to grass, never to bare earth: a dodo's clearing, not a scar
+        const k = j * N + i;
+        if (d < 1 && this.veg[k] > 0.25) this.veg[k] = Math.max(0.25, this.veg[k] * (1 - amount * (1 - d * d)));
       }
     }
   }
@@ -291,6 +293,17 @@ export class Terrain {
 
   riverCells = 0;
   lakeCells = 0;
+  /** rain from a hand: falls only under it (x, z, radius, amount 0..1), or null */
+  shower: { x: number; z: number; r: number; a: number } | null = null;
+
+  /** how much of the shower falls on cell (i, j) */
+  private showerAt(i: number, j: number) {
+    const sh = this.shower;
+    if (!sh) return 0;
+    const [x, z] = this.toWorld(i, j);
+    const d2 = ((x - sh.x) ** 2 + (z - sh.z) ** 2) / (sh.r * sh.r);
+    return d2 < 1 ? sh.a * (1 - d2) : 0;
+  }
 
   /** where lava is pouring into the sea this moment: x, z, strength */
   steam: [number, number, number] | null = null;
@@ -340,8 +353,8 @@ export class Terrain {
         const suit = smooth(0.03, 0.12, h) * (1 - smooth(1.05, 1.5, h)) * (1 - smooth(0.9, 1.8, slope));
         const near = Math.max(V[l], V[r], V[u], V[d]);
         const seed = 0.0025 + 0.9 * near;
-        // river banks stay green between storms
-        const w = wet + this.river[k] * 0.6;
+        // river banks stay green between storms, and a hand's shower waters what's under it
+        const w = wet + this.river[k] * 0.6 + (this.shower ? this.showerAt(i, j) * 1.6 : 0);
         v += dt * w * suit * seed * (1 - v) * 1.6;
         out[k] = v;
         sum += v;
@@ -435,6 +448,12 @@ export class Terrain {
     const inflow = 0.35 + rain * 1.2;
     A.fill(0);
     for (let c = 0; c < this.landOrder; c++) A[order[c]] = inflow;
+    if (this.shower) {
+      for (let c = 0; c < this.landOrder; c++) {
+        const k = order[c];
+        A[k] += this.showerAt(k % N, (k - (k % N)) / N) * 1.4;
+      }
+    }
     // highest first: each cell hands its water on to the one it drains into
     for (let c = this.landOrder - 1; c >= 0; c--) {
       const k = order[c];

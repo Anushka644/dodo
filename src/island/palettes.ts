@@ -15,7 +15,7 @@
 export type Rgb = [number, number, number];
 
 /** the order the world shader numbers its materials in (world.frag M_*) */
-export const MATERIALS = ['ink', 'sky', 'smoke', 'water', 'land', 'rock', 'forest', 'dodo', 'beak'] as const;
+export const MATERIALS = ['ink', 'sky', 'smoke', 'water', 'land', 'rock', 'forest', 'dodo', 'beak', 'hand'] as const;
 export type Material = (typeof MATERIALS)[number];
 /** inks per ramp slot (key … paper); palettes with fewer inks use the first `steps + 1` */
 export const RAMP = 6;
@@ -113,6 +113,7 @@ const NOON = run('noon', '#15171c', '#f4eee0', {
   forest: ['#143826', '#285f33', '#55893a', '#a2c25c'],
   dodo: ['#3e3029', '#77604e', '#ae937a', '#ddcbb2'],
   beak: ['#6e4f17', '#b0802a', '#e0b648', '#f5dd8a'],
+  hand: ['#4a372c', '#8b6a55', '#c8a68a', '#efdcc6'],
 });
 const DAWN = run('dawn', '#1d1420', '#f8e5d0', {
   sky: ['#4b3f66', '#9a7a98', '#dba6a4', '#f3cdb6'],
@@ -123,6 +124,7 @@ const DAWN = run('dawn', '#1d1420', '#f8e5d0', {
   forest: ['#1e3634', '#36584c', '#6f8a66', '#b4bb88'],
   dodo: ['#45343c', '#7c6670', '#b39a9c', '#dcc6c0'],
   beak: ['#74452a', '#b8783c', '#e6ae6e', '#f6d6a2'],
+  hand: ['#4c3238', '#8a6066', '#c99a90', '#f0d0bf'],
 });
 const DUSK = run('dusk', '#170f12', '#f7d9a6', {
   sky: ['#4c2a40', '#a14f50', '#e08752', '#f2b878'],
@@ -133,6 +135,7 @@ const DUSK = run('dusk', '#170f12', '#f7d9a6', {
   forest: ['#202418', '#40452a', '#79743a', '#bba65c'],
   dodo: ['#3d2a29', '#735550', '#ab8a7a', '#dcbc9e'],
   beak: ['#6c3518', '#b0662c', '#e69c52', '#f6cc84'],
+  hand: ['#44282a', '#83503e', '#c08362', '#efbe90'],
 });
 const NIGHT = run('night', '#04060b', '#b6c6dc', {
   sky: ['#0a1222', '#18263f', '#2f4566', '#5f7ca3'],
@@ -143,6 +146,7 @@ const NIGHT = run('night', '#04060b', '#b6c6dc', {
   forest: ['#09171f', '#14303f', '#284e60', '#52788c'],
   dodo: ['#1c1e2a', '#42455a', '#727694', '#a5a9c2'],
   beak: ['#2e2e2a', '#5e5a48', '#918a6c', '#c0b894'],
+  hand: ['#1b1e2b', '#3f4560', '#6f7896', '#a5adc6'],
 });
 
 export const PALETTES: Palette[] = [

@@ -7,3 +7,4 @@ debug/
 
 # agent worktrees
 .claude/worktrees/
+public/mediapipe/

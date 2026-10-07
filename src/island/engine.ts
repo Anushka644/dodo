@@ -4,6 +4,8 @@ import { Flock, MAX_DODOS } from './dodos';
 import { Birds } from './birds';
 import { PALETTES, skyPalette, stormy, type Palette } from './palettes';
 import { islandSound } from './sound';
+import { WorldHand, syntheticPose, type ViewCam } from './hand/hand';
+import { HandTracker, openCamera, closeCamera, type HandPose } from './hand/tracker';
 import { sound } from '../sound';
 
 type V3 = [number, number, number];
@@ -37,9 +39,16 @@ export type Milestone =
   | 'lavaSea'
   | 'lake'
   | 'half'
-  | 'safe';
+  | 'safe'
+  | 'hand'
+  | 'carried'
+  | 'shower';
 
 export interface IslandHud {
+  /** the hand: off, starting up, waiting to see a hand, or in the world */
+  hand: 'off' | 'starting' | 'looking' | 'here';
+  /** how many dodos are riding it */
+  riders: number;
   day: number;
   dodos: number;
   land: number;
@@ -95,6 +104,20 @@ export class IslandEngine {
   /** smoke and steam over new land: x, base y, z, strength (four at most) */
   private vents: { x: number; y: number; z: number; s: number; live: boolean }[] = [];
   private glow = 0;
+  // the hand: your own, through the webcam
+  readonly hand = new WorldHand();
+  private tracker: HandTracker | null = null;
+  private video: HTMLVideoElement | null = null;
+  private handState: IslandHud['hand'] = 'off';
+  /** a pose to use instead of the camera (tests, and the dev console) */
+  debugPose: HandPose | null = null;
+  private handJ = new Float32Array(84);
+  private handB = new Float32Array(4);
+  /** rings in the sea where fingertips touch it: x, z, age, strength */
+  private ripples: { x: number; z: number; age: number; s: number }[] = [];
+  private tipWet = Array(7).fill(false) as boolean[];
+  private tipLast: [number, number][] = Array.from({ length: 7 }, () => [0, 0] as [number, number]);
+  private shower = 0;
   // weather
   private rainHeld = false;
   rain = 0;
@@ -136,12 +159,13 @@ export class IslandEngine {
 
   run() {
     this.layout();
-    if (import.meta.env.DEV) (window as unknown as { island: IslandEngine }).island = this;
+    if (import.meta.env.DEV) Object.assign(window, { island: this, syntheticPose });
     this.loop();
   }
 
   dispose() {
     cancelAnimationFrame(this.raf);
+    this.disableHand();
   }
 
   layout() {
@@ -306,6 +330,37 @@ export class IslandEngine {
     this.rainHeld = on;
   }
 
+  /** lend a hand: open the camera and start tracking. Returns the video (for the mirror). */
+  async enableHand(onStatus?: (s: string) => void): Promise<HTMLVideoElement> {
+    if (this.video) return this.video;
+    this.handState = 'starting';
+    try {
+      onStatus?.('Opening the camera…');
+      const video = await openCamera();
+      this.video = video;
+      this.tracker = await HandTracker.create(video, onStatus);
+      this.handState = 'looking';
+      sound.wake();
+      islandSound.wake();
+      return video;
+    } catch (e) {
+      this.disableHand();
+      throw e;
+    }
+  }
+
+  disableHand() {
+    this.tracker?.dispose();
+    this.tracker = null;
+    closeCamera(this.video);
+    this.video = null;
+    this.handState = 'off';
+  }
+
+  get handActive() {
+    return this.handState !== 'off' || !!this.debugPose;
+  }
+
   setSunHour(hour: number) {
     // a simple daily arc: rises in the east (+x), sets in the west
     const a = ((hour - 6) / 12) * Math.PI;
@@ -389,7 +444,7 @@ export class IslandEngine {
         islandSound.thunder(0.3 + Math.random() * 1.1);
       }
     }
-    islandSound.rain(this.rain);
+    islandSound.rain(Math.max(this.rain, this.shower * 0.7));
 
     // the forest grows where it rains
     this.growTimer -= dt;
@@ -435,7 +490,16 @@ export class IslandEngine {
         this.onHatch?.(this.flock.count);
       }
     }
-    if (this.flock.step(dt) > 0) islandSound.honk(1.15 + Math.random() * 0.2);
+    this.stepHand(dt, now);
+    const ev = this.flock.step(dt, this.hand.visible ? this.hand : null);
+    if (ev.startled > 0) islandSound.honk(1.15 + Math.random() * 0.2);
+    if (ev.boarded > 0) {
+      islandSound.honk(1.3);
+      this.mark('carried');
+    }
+    if (ev.dropped > 0) islandSound.honk(1.45);
+    if (ev.landed > 0) islandSound.honk(0.8);
+    if (ev.splashed > 0) islandSound.splash();
 
     // seabirds come to nest once there's forest, one for every patch of it
     const day = Math.min(1, Math.max(0, (this.sun[1] + 0.1) / 0.3));
@@ -523,6 +587,75 @@ export class IslandEngine {
     return out;
   }
 
+  /** the camera's hand into the world, and what it does there */
+  private stepHand(dt: number, now: number) {
+    const pose = this.debugPose ?? this.tracker?.detect(now) ?? null;
+    if (!pose && !this.hand.visible) {
+      this.terrain.shower = null;
+      this.shower = 0;
+      this.ripples = this.ripples.filter((r) => (r.age += dt) < 3);
+      return;
+    }
+    const view: ViewCam = { ...this.cam, tanFov: this.tanFov, aspect: window.innerWidth / window.innerHeight, dist: this.dist };
+    const wasHere = this.hand.present > 0.5;
+    this.hand.update(dt, pose, view, (x, z) => this.terrain.surface(x, z));
+    if (pose) {
+      this.idle = 0;
+      if (this.tracker) this.handState = 'here';
+    } else if (this.tracker) this.handState = 'looking';
+    if (!wasHere && this.hand.present > 0.5) islandSound.whoosh();
+    if (this.hand.present > 0.9) this.mark('hand');
+
+    // a hand in the sea: rings spread from wherever it touches, and it drags a wake
+    this.hand.touches().forEach(({ p: tip, r }, i) => {
+      const floor = this.terrain.sample(tip[0], tip[2]);
+      const wet = this.hand.present > 0.6 && tip[1] - r < SEA + 0.01 && floor < SEA - 0.01;
+      const [lx, lz] = this.tipLast[i];
+      const moved = Math.hypot(tip[0] - lx, tip[2] - lz);
+      if (wet && (!this.tipWet[i] || moved > 0.14)) {
+        const s = this.tipWet[i] ? 0.6 : 1;
+        this.ripples.push({ x: tip[0], z: tip[2], age: 0, s });
+        if (this.ripples.length > 8) this.ripples.shift();
+        this.tipLast[i] = [tip[0], tip[2]];
+        if (!this.tipWet[i]) islandSound.plink(0.8 + (i % 5) * 0.12);
+      }
+      this.tipWet[i] = wet;
+    });
+    this.ripples = this.ripples.filter((r) => (r.age += dt) < 3);
+
+    // wiggling fingers rain on whatever is under the hand
+    const want = this.hand.present > 0.8 ? Math.max(0, (this.hand.wiggle - 0.2) / 0.8) : 0;
+    this.shower += (want - this.shower) * Math.min(1, dt * (want > this.shower ? 4 : 1.2));
+    const p = this.hand.palm.c;
+    this.terrain.shower = this.shower > 0.05 ? { x: p[0], z: p[2], r: 0.85 * (this.hand.scale / 7), a: this.shower } : null;
+    if (this.shower > 0.4) this.mark('shower');
+  }
+
+  /** where the hand's shower falls on the print: texel x, y of the hand, a half-width, how hard; and the texel y of the ground under it */
+  private showerUniform(): { top: number[]; floor: number } {
+    if (this.shower < 0.02) return { top: [0, 0, 0, 0], floor: 0 };
+    const [w, h] = this.renderer.worldSize;
+    const aspect = w / h;
+    const project = (q: V3) => {
+      const d: V3 = [q[0] - this.cam.pos[0], q[1] - this.cam.pos[1], q[2] - this.cam.pos[2]];
+      const z = Math.max(0.2, d[0] * this.cam.fwd[0] + d[1] * this.cam.fwd[1] + d[2] * this.cam.fwd[2]);
+      const nx = (d[0] * this.cam.right[0] + d[1] * this.cam.right[1] + d[2] * this.cam.right[2]) / (z * this.tanFov * aspect);
+      const ny = (d[0] * this.cam.up[0] + d[1] * this.cam.up[1] + d[2] * this.cam.up[2]) / (z * this.tanFov);
+      return { x: (nx * 0.5 + 0.5) * w, y: (ny * 0.5 + 0.5) * h, z };
+    };
+    const p = this.hand.palm.c;
+    const top = project(p);
+    const floor = project([p[0], this.terrain.surface(p[0], p[2]), p[2]]);
+    const r = ((0.55 * this.hand.scale) / 7 / (top.z * this.tanFov * 2)) * h;
+    return { top: [top.x, top.y, r, this.shower], floor: floor.y };
+  }
+
+  private rippleUniform() {
+    const out = new Float32Array(32);
+    this.ripples.forEach((r, i) => out.set([r.x, r.z, r.age, r.s], i * 4));
+    return out;
+  }
+
   private currentPalette(): Palette {
     if (this.palette !== 0) return PALETTES[this.palette];
     const p = skyPalette(this.sun[1], this.sun[0] > 0);
@@ -551,6 +684,7 @@ export class IslandEngine {
         uIntro: this.intro,
         uVent: this.ventUniform(),
         uBird: this.birdData,
+        ...this.handUniforms(),
       },
       {
         uPx: this.canvas.width / this.renderer.worldSize[0],
@@ -571,6 +705,19 @@ export class IslandEngine {
     return ((h % 24) + 24) % 24;
   }
 
+  private handUniforms() {
+    this.hand.uniforms({ joints: this.handJ, bound: this.handB }, this.cam.pos);
+    const sh = this.showerUniform();
+    return {
+      uHandJ: this.handJ,
+      uHandB: this.handB,
+      uHandOn: this.hand.present,
+      uRipple: this.rippleUniform(),
+      uShower: sh.top,
+      uShowerFloor: sh.floor,
+    };
+  }
+
   /** "06:40" from where the sun is */
   hour(): string {
     const h = this.hours();
@@ -584,6 +731,8 @@ export class IslandEngine {
     this.hudAt = now;
     const d = this.drag;
     this.onHud?.({
+      hand: this.debugPose ? 'here' : this.handState,
+      riders: this.flock.dodos.filter((d) => d.ride).length,
       day: this.day,
       dodos: this.flock.count,
       land: this.terrain.landArea,
@@ -596,6 +745,12 @@ export class IslandEngine {
       px: this.px,
       mode: !d ? 'idle' : d.kind === 'sculpt' ? (d.carve ? 'carve' : 'raise') : d.kind,
     });
+  }
+
+  /** key and paper of the inks on the island right now (for the camera mirror) */
+  mirrorInks(): { ink: [number, number, number]; paper: [number, number, number] } {
+    const p = this.currentPalette();
+    return { ink: p.inks[0], paper: p.inks[3] };
   }
 
   /** paper and ink for a mounted plate: the Day palette always prints on cream */
