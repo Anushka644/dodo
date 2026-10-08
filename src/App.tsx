@@ -5,11 +5,14 @@ import { makePlate, roman } from './island/plate';
 import { PaperMirror } from './island/face/mirror';
 import { sound } from './sound';
 
+/** the key that, held, makes a drag turn the island */
+const TURN_KEY = /Mac|iPhone|iPad|iPod/.test(navigator.userAgent) ? '⌘' : 'Ctrl';
+
 const HINTS = [
   'Press and hold on the sea to raise land.',
-  'Now hold R, or the rain button, and let it rain. Forests follow the rain.',
+  'Now hold the space bar, or the rain button, and let it rain. Forests follow the rain.',
   'Drag across the sky to move the sun.',
-  'Shift-drag to carve. Right-drag to turn the island. Click a dodo to say hello.',
+  `Shift-drag to carve. ${TURN_KEY}-drag to turn the island. Click a dodo to say hello.`,
 ];
 
 // the naturalist's log: one line for each first
@@ -74,6 +77,7 @@ export function App() {
   const [soundOn, setSoundOn] = useState(true);
   const [toast, setToast] = useState<string | null>(null);
   const [hint, setHint] = useState(0);
+  const [turning, setTurning] = useState(false);
   const [log, setLog] = useState<Entry[]>([{ id: 0, stamp: 'D1 06:40', text: 'The last dodo, alone on a rock.' }]);
   const [ending, setEnding] = useState(false);
   const [tried, setTried] = useState<Set<Milestone>>(new Set());
@@ -137,15 +141,27 @@ export function App() {
     if (hint === 2 && hud.mode === 'sun') setHint(3);
   }, [hud, hint]);
 
-  // hold R for rain
+  // hold the space bar for rain; hold ⌘ (or Ctrl) and drag to turn
   useEffect(() => {
+    const typing = (e: KeyboardEvent) => e.target instanceof HTMLElement && e.target.matches('input, textarea, select, [contenteditable]');
+    const space = (e: KeyboardEvent) => (e.code === 'Space' || e.key === ' ') && !typing(e);
     const down = (e: KeyboardEvent) => {
-      if ((e.key === 'r' || e.key === 'R') && !e.repeat && !e.metaKey && !e.ctrlKey) engineRef.current?.setRain(true);
+      if (e.key === 'Meta' || e.key === 'Control') setTurning(true);
+      if (!space(e) || e.metaKey || e.ctrlKey || e.altKey) return;
+      // not a scroll, and not a click on whichever button has focus
+      e.preventDefault();
+      if (!e.repeat) engineRef.current?.setRain(true);
     };
     const up = (e: KeyboardEvent) => {
-      if (e.key === 'r' || e.key === 'R') engineRef.current?.setRain(false);
+      if (e.key === 'Meta' || e.key === 'Control') setTurning(false);
+      if (!space(e)) return;
+      e.preventDefault();
+      engineRef.current?.setRain(false);
     };
-    const blur = () => engineRef.current?.setRain(false);
+    const blur = () => {
+      setTurning(false);
+      engineRef.current?.setRain(false);
+    };
     window.addEventListener('keydown', down);
     window.addEventListener('keyup', up);
     window.addEventListener('blur', blur);
@@ -201,7 +217,7 @@ export function App() {
       pinch.current = { d: Math.hypot(a.x - b.x, a.y - b.y), x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
       return;
     }
-    engineRef.current?.pointerDown(e.clientX, e.clientY, e.button, e.shiftKey);
+    engineRef.current?.pointerDown(e.clientX, e.clientY, e.button, e.shiftKey, e.metaKey || e.ctrlKey);
   };
 
   const onMove = (e: React.PointerEvent) => {
@@ -380,7 +396,7 @@ export function App() {
   const forest = hud && hud.land > 0.05 ? Math.min(100, Math.round((hud.forest / hud.land) * 100)) : 0;
 
   return (
-    <div className={`app ${ready ? 'is-ready' : ''} mode-${hud?.mode ?? 'idle'} ${windy ? `is-windy wind-${hud?.windSide}` : ''}`}>
+    <div className={`app ${ready ? 'is-ready' : ''} mode-${hud?.mode ?? 'idle'} ${turning ? 'is-turning' : ''} ${windy ? `is-windy wind-${hud?.windSide}` : ''}`}>
       <canvas
         ref={canvasRef}
         className="stage"
@@ -497,7 +513,7 @@ export function App() {
             onPointerLeave={() => engineRef.current?.setRain(false)}
             onPointerCancel={() => engineRef.current?.setRain(false)}
             onContextMenu={(e) => e.preventDefault()}
-            title="Hold to make it rain (R)"
+            title="Hold to make it rain (space bar)"
           >
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden>
               <path d="M7 15a4 4 0 0 1-.6-7.95A5.5 5.5 0 0 1 17 8.5a3.5 3.5 0 0 1 .5 6.5" />

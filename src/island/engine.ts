@@ -284,13 +284,14 @@ export class IslandEngine {
 
   // ------------------------------------------------------------ input
 
-  pointerDown(x: number, y: number, button: number, shift: boolean) {
+  /** turn: the turn key (⌘, or Ctrl) is held, so a drag turns the island */
+  pointerDown(x: number, y: number, button: number, shift: boolean, turn = false) {
     if (this.intro < 1) this.intro = Math.max(this.intro, 0.9);
     sound.wake();
     islandSound.wake();
     this.idle = 0;
     this.pointer = { x, y, inside: true, shift };
-    if (button === 2 || button === 1) {
+    if (turn || button === 2 || button === 1) {
       this.drag = { kind: 'orbit', x, y };
       return;
     }

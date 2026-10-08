@@ -69,8 +69,12 @@ button {
   cursor: grabbing;
 }
 
+.is-turning .stage {
+  cursor: grab;
+}
+
 .mode-orbit .stage {
-  cursor: move;
+  cursor: grabbing;
 }
 
 /* chrome sits on the print like a caption, in small printed panels */

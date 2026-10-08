@@ -44,9 +44,9 @@ history, with a caption of what's on the island.
 |---|---|
 | **Press and hold** on the sea or land | raise land (it erupts) |
 | **Shift-drag** | carve land away |
-| **Hold R** or the rain button | rain, storms |
+| **Hold the space bar** or the rain button | rain, storms |
 | **Drag the sky** | move the sun; below the horizon is night |
-| **Right-drag**, arrows · **scroll** · **double-click** | turn · zoom · fly to a spot |
+| **⌘-drag** (Ctrl-drag), arrows · **scroll** · **double-click** | turn · zoom · fly to a spot |
 | **Click a dodo** | say hello |
 | **1–5** · **P** · **[ ]** | inks · print pattern · dot size |
 | **H** | back home |
