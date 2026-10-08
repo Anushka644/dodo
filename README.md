@@ -2,7 +2,7 @@
 
 **An island for the last dodo. You make it with your hands; it comes alive by itself.**
 
-Live: _add your deploy link here_ · Built for the Dodo Payments design engineer brief.
+Live: **[anushka644.github.io/dodo](https://anushka644.github.io/dodo/)** · Built for the Dodo Payments design engineer brief.
 
 ---
 
