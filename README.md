@@ -24,14 +24,16 @@ Raise twelve dodos and the species isn't extinct any more, at least here.
 
 **Lend your face** and you become the island's weather. Smile and the sun
 comes out; at night, it rises for you. Frown and the sky breaks into rain.
-Close your eyes for a moment and night falls, so you open them to the stars.
+Tilt your head and the sun goes with it, like turning a dial: towards your
+right shoulder the day runs on into sunset and night, towards your left back
+to morning.
 Puff out your cheeks and blow: your face flies up into a corner of the sky as
 a wind head, the cheek-puffed face that blows the winds on old sea charts,
 and lines of breath stream across the island, whitecaps break on the sea, the
 clouds race and the smoke leans. Open wide and roar, and the mountain answers
 with an eruption. Move your head and the island shifts, as if it sat behind
-the glass. A small legend by the mirror lights up each expression as the
-camera sees it.
+the glass. A small legend by the mirror shows how strongly the camera sees
+each expression, and lights up the ones that count.
 
 The whole world is drawn as a print: four inks and one fluorescent spot
 colour, put down through an ordered dither, like an engraving that happens to
@@ -48,7 +50,7 @@ history, with a caption of what's on the island.
 | **Click a dodo** | say hello |
 | **1–5** · **P** · **[ ]** | inks · print pattern · dot size |
 | **H** | back home |
-| **Lend your face** (webcam) | smile: sun · frown: rain · eyes closed: night · puff and blow: wind · open wide: eruption · move your head: look around |
+| **Lend your face** (webcam) | smile: sun · frown: rain · tilt your head: time of day · puff and blow: wind · open wide: eruption · move your head: look around |
 
 On a touchscreen: one finger sculpts, two fingers turn and zoom.
 
@@ -110,11 +112,14 @@ of TypeScript and GLSL.
   wingbeats and glides, and leave at night.
 - **The face.** MediaPipe's face landmarker runs on the webcam (GPU, falling
   back to CPU), with its runtime and model served from this site. Its
-  blendshapes (smile, brow-down, blink, cheek-puff and pucker, jaw-open) are
-  eased, and each expression has two thresholds, one to switch on and a lower
-  one to switch off, so nothing flickers. A blink is not a sleep: the eyes
-  have to stay closed for a moment. A laugh is not a roar. Expressions drive
-  the same weather as the mouse and keyboard (rain, sun, the day's clock), plus
+  blendshapes (smile, brow-down and mouth-frown, cheek-puff and pucker,
+  jaw-open) are eased, and each expression has two thresholds, one to switch
+  on and a lower one to switch off, so nothing flickers. A frown reads small
+  in MediaPipe's numbers and every face rests differently, so it's measured
+  as the rise above your own resting face. A blow has to be held (talking
+  rounds the lips too); a laugh or a yawn is not a roar. Head tilt is the
+  slope of the line between the eyes. Expressions drive the same weather as
+  the mouse and keyboard (rain, sun, the day's clock), plus
   a wind that runs through the shader: cloud drift, chop and whitecaps, the
   lean of the smoke, slanted rain, and engraved breath lines streaming from
   the wind head. The head's position in the mirror turns the view, and leaning

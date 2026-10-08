@@ -516,12 +516,27 @@ button {
 }
 
 .legend li {
+  position: relative;
   display: flex;
   justify-content: space-between;
   gap: 10px;
-  padding: 1px 0;
+  padding: 1px 0 3px;
   color: var(--fg-2);
   transition: color 200ms;
+}
+
+/* how strongly the camera sees each expression; full when it counts */
+.legend .meter {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--fg-3);
+  transition: width 150ms linear;
+}
+
+.legend li.is-on .meter {
+  background: var(--lime);
 }
 
 .legend .does {

@@ -29,7 +29,7 @@ const LOG: Record<Milestone, string> = {
   face: 'A face in the sky, watching.',
   sunshine: 'A smile, and the sun came out.',
   storm: 'A frown, and the sky broke.',
-  sleep: 'Eyes closed, and the night came down.',
+  tilt: 'A tilt of the head, and the sun went with it.',
   wind: 'A face blew from the corner of the sky, as on the old charts.',
   roar: 'A roar, and the mountain answered.',
 };
@@ -38,7 +38,7 @@ const LOG: Record<Milestone, string> = {
 const FACE_STEPS: [Milestone, string][] = [
   ['sunshine', 'Smile.'],
   ['storm', 'Now frown.'],
-  ['sleep', 'Close your eyes for a moment.'],
+  ['tilt', 'Tilt your head slowly to one side, and watch the sun.'],
   ['wind', 'Puff out your cheeks and blow.'],
   ['roar', 'Open wide, and roar.'],
 ];
@@ -54,7 +54,7 @@ function faceHint(hud: IslandHud, tried: Set<Milestone>, status: string): string
 const LEGEND: [keyof IslandHud['expr'], string, string][] = [
   ['smile', 'Smile', 'sun'],
   ['frown', 'Frown', 'rain'],
-  ['closed', 'Close your eyes', 'night'],
+  ['tilt', 'Tilt your head', 'time'],
   ['blow', 'Puff and blow', 'wind'],
   ['roar', 'Open wide', 'eruption'],
 ];
@@ -449,7 +449,8 @@ export function App() {
           {LEGEND.map(([k, face, does]) => (
             <li key={k} className={hud?.expr[k] ? 'is-on' : ''}>
               <span>{face}</span>
-              <span className="does">{does}</span>
+              <span className="does">{k === 'tilt' && hud?.tiltDir ? (hud.tiltDir > 0 ? 'evening ▸' : '◂ morning') : does}</span>
+              <i className="meter" style={{ width: `${Math.min(1, hud?.levels[k] ?? 0) * 100}%` }} />
             </li>
           ))}
         </ul>

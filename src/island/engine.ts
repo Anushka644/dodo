@@ -14,6 +14,10 @@ const norm = (v: V3): V3 => {
 };
 const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const clamp = (x: number, a: number, b: number) => Math.min(b, Math.max(a, x));
+const smooth = (a: number, b: number, x: number) => {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
 /** Rodrigues: rotate v about a unit axis k by angle a */
 const rotate = (v: V3, k: V3, a: number): V3 => {
   const c = Math.cos(a), s = Math.sin(a);
@@ -28,7 +32,7 @@ const HATCH_AT = [0.25, 0.7, 1.3, 2.1, 3.1, 4.3, 5.7, 7.3, 9.1, 11.1, 13.3];
 export interface Expressions {
   smile: boolean;
   frown: boolean;
-  closed: boolean;
+  tilt: boolean;
   blow: boolean;
   roar: boolean;
 }
@@ -53,7 +57,7 @@ export type Milestone =
   | 'face'
   | 'sunshine'
   | 'storm'
-  | 'sleep'
+  | 'tilt'
   | 'wind'
   | 'roar';
 
@@ -62,6 +66,10 @@ export interface IslandHud {
   face: 'off' | 'starting' | 'looking' | 'here';
   /** which expressions are showing right now */
   expr: Expressions;
+  /** how strongly each is showing, 1 = enough to count (for the legend's meters) */
+  levels: Record<keyof Expressions, number>;
+  /** which way the head is turning the sun: 1 on towards evening, −1 back towards morning */
+  tiltDir: number;
   /** which corner of the sky the wind head blows from */
   windSide: 'left' | 'right';
   day: number;
@@ -128,8 +136,10 @@ export class IslandEngine {
   onFaceLost?: () => void;
   /** a reading to use instead of the camera (tests, and the dev console) */
   debugFace: FaceRead | null = null;
-  private expr: Expressions = { smile: false, frown: false, closed: false, blow: false, roar: false };
-  private closedFor = 0;
+  private expr: Expressions = { smile: false, frown: false, tilt: false, blow: false, roar: false };
+  private levels: Record<keyof Expressions, number> = { smile: 0, frown: 0, tilt: 0, blow: 0, roar: 0 };
+  private tiltDir = 0;
+  private frownFor = 0;
   private roarFor = 0;
   private roarAt: [number, number] | null = null;
   private faceRain = false;
@@ -664,8 +674,10 @@ export class IslandEngine {
     const e = this.expr;
     const k = 1 - Math.exp(-dt * 3);
     if (!f) {
-      e.smile = e.frown = e.closed = e.blow = e.roar = false;
-      this.closedFor = this.roarFor = this.blowFor = 0;
+      e.smile = e.frown = e.tilt = e.blow = e.roar = false;
+      this.frownFor = this.roarFor = this.blowFor = 0;
+      this.tiltDir = 0;
+      this.levels = { smile: 0, frown: 0, tilt: 0, blow: 0, roar: 0 };
       // gone a while, and the next face finds its own middle again
       this.faceGoneFor += dt;
       if (this.faceGoneFor > 2) {
@@ -686,8 +698,12 @@ export class IslandEngine {
       if (this.wind.s < 0.02 && Math.abs(f.head.x) > 0.1) this.windSide = f.head.x < 0 ? 'left' : 'right';
       // a little hysteresis, so an expression doesn't flicker on and off at the threshold
       e.smile = e.smile ? f.smile > 0.32 : f.smile > 0.5;
-      // (a roar lowers the brows too: an open jaw isn't a frown)
-      e.frown = !e.smile && f.roar < 0.4 && (e.frown ? f.frown > 0.25 : f.frown > 0.42);
+      // (a roar lowers the brows too: an open jaw isn't a frown; and it must hold a moment)
+      if (e.frown) e.frown = !e.smile && f.roar < 0.4 && f.frown > 0.35;
+      else {
+        this.frownFor = !e.smile && f.roar < 0.4 && f.frown > 0.55 ? this.frownFor + dt : 0;
+        e.frown = this.frownFor > 0.15;
+      }
       // a blow has to be held a moment, or every "oo" in conversation would gust
       if (e.blow) e.blow = f.blow > 0.28;
       else {
@@ -695,9 +711,22 @@ export class IslandEngine {
         e.blow = this.blowFor > 0.28;
       }
       // a blink is not a sleep
-      // (nor is a glance at the keyboard, a laugh's squint or a scowl)
-      this.closedFor = f.closed > 0.55 && !e.smile && !e.frown ? this.closedFor + dt : 0;
-      e.closed = this.closedFor > 0.6;
+      // tilt your head and the sun goes with it, like turning a dial: towards your right
+      // shoulder runs the day on into evening and night, towards your left back to morning
+      const tilt = Math.abs(f.tilt);
+      e.tilt = e.tilt ? tilt > 0.1 : tilt > 0.14;
+      this.tiltDir = e.tilt ? Math.sign(f.tilt) : 0;
+      if (e.tilt) {
+        const hoursPerSecond = 3 * smooth(0.1, 0.4, tilt);
+        this.sunGoal = rotate(this.sunGoal, norm([0, -0.32, 0.95]), this.tiltDir * dt * hoursPerSecond * ((Math.PI * 2) / 24));
+      }
+      this.levels = {
+        smile: f.smile / 0.5,
+        frown: f.frown / 0.55,
+        tilt: tilt / 0.14,
+        blow: f.blow / 0.42,
+        roar: f.roar / 0.55,
+      };
       // a laugh is not a roar, and neither is a yawn (eyes shut, jaw open)
       this.roarFor = f.roar > 0.55 && !e.smile && f.closed < 0.4 ? this.roarFor + dt : 0;
       e.roar = this.roarFor > 0.45;
@@ -716,11 +745,7 @@ export class IslandEngine {
         this.mark('storm');
       }
       this.faceRain = e.frown;
-      // eyes closed a moment: night falls (you open them to the stars)
-      if (e.closed && !was.closed) {
-        this.setSunHour(23.3);
-        this.mark('sleep');
-      }
+      if (e.tilt && !was.tilt) this.mark('tilt');
       if (e.blow && !was.blow) {
         islandSound.whoosh();
         this.mark('wind');
@@ -870,6 +895,8 @@ export class IslandEngine {
     this.onHud?.({
       face: this.debugFace ? 'here' : this.faceState,
       expr: { ...this.expr },
+      levels: { ...this.levels },
+      tiltDir: this.tiltDir,
       windSide: this.windSide,
       day: this.day,
       dodos: this.flock.count,
